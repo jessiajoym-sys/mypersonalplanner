@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  background: #F6F5FA;
+}
+
+@layer components {
+  .card { @apply bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden; }
+  .card-h { @apply flex items-center justify-between px-4 py-3 border-b border-gray-100; }
+  .btn { @apply px-4 py-2 rounded-xl font-semibold text-sm transition-all cursor-pointer font-sans; }
+  .btn-blue { @apply btn bg-blue-500 text-white hover:bg-blue-600 border-none; }
+  .btn-teal { @apply btn bg-teal-500 text-white hover:bg-teal-600 border-none; }
+  .btn-green { @apply btn bg-green-500 text-white hover:bg-green-600 border-none; }
+  .btn-orange { @apply btn bg-orange-500 text-white hover:bg-orange-600 border-none; }
+  .btn-red { @apply btn bg-red-500 text-white hover:bg-red-600 border-none; }
+  .btn-gray { @apply btn bg-gray-100 text-gray-500 hover:bg-gray-200 border border-gray-200; }
+  .btn-sm { @apply px-3 py-1.5 text-xs rounded-lg; }
+  .inp { @apply w-full px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-blue-400 focus:bg-white transition-all font-sans; }
+  .sel { @apply px-3 py-2.5 rounded-xl border border-gray-200 bg-white text-sm outline-none font-sans cursor-pointer; }
+  .tag { @apply text-xs font-bold px-2 py-0.5 rounded-full; }
+  .section-title { @apply text-xs font-bold uppercase tracking-widest text-gray-400 px-1 py-2; }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #EBEBF2; border-radius: 4px; }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.2s ease; }
+
+@keyframes pulse-soft { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+.pulse-soft { animation: pulse-soft 2s infinite; }
