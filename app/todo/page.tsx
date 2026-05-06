@@ -46,7 +46,7 @@ export default function TodoPage() {
       .eq('user_id', user.id).order('created_at', { ascending: false })
     if (data) {
       setTodos(data)
-      const existingProjects = [...new Set(data.map((t: any) => t.category))]
+      const existingProjects = Array.from(new Set(data.map((t: any) => t.category)))
       const customProjects = existingProjects
         .filter((p: any) => p && !DEFAULT_PROJECTS.find(dp => dp.name === p))
         .map((p: any) => ({ name: p, color: '#8B5CF6', dot: 'bg-purple-500' }))
