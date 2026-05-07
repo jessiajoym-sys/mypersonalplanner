@@ -102,7 +102,6 @@ export default function Sidebar({ user, profile }: { user: any, profile: any }) 
       <div className="section-title">Planner</div>
       {navItem('/', '🏠', 'Dashboard')}
       {navItem('/dashboard/business', '💼', 'Business Dashboard')}
-      {navItem('/calendar', '📅', 'Calendar')}
       {navItem('/todo', '✅', 'To Do List')}
       {navItem('/habit', '💧', 'Daily Habit')}
       {navItem('/weekly', '📆', 'Weekly Schedule')}
