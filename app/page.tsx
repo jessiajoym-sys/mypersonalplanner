@@ -59,11 +59,25 @@ export default function Dashboard() {
     load()
   }
 
-  async function addEvent() {
+async function addEvent() {
     if (!eventForm.title.trim()) return
     const { data: { user: u } } = await supabase.auth.getUser()
-    if (!u) return
-    await supabase.from('events').insert({ ...eventForm, user_id: u.id })
+    if (!u) { alert('Not logged in'); return }
+    const { data, error } = await supabase.from('events').insert({
+      title: eventForm.title,
+      date: eventForm.date,
+      category: eventForm.category,
+      category_color: eventForm.category_color,
+      start_time: eventForm.start_time || null,
+      end_time: eventForm.end_time || null,
+      all_day: eventForm.all_day,
+      notes: eventForm.notes || null,
+      user_id: u.id,
+    })
+    if (error) {
+      alert('Error: ' + error.message)
+      return
+    }
     setShowAddEvent(false)
     setEventForm({ title: '', date: format(new Date(), 'yyyy-MM-dd'), category: 'event', category_color: '#5B7FFF', start_time: '', end_time: '', all_day: true, notes: '' })
     load()
