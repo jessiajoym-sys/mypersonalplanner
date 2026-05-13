@@ -21,9 +21,11 @@ export default function Dashboard() {
   const [newCatName, setNewCatName] = useState('')
   const [newCatColor, setNewCatColor] = useState('#5B7FFF')
   const [newCatIcon, setNewCatIcon] = useState('📅')
+  const [newCatParent, setNewCatParent] = useState('')
+  const [newCatImportant, setNewCatImportant] = useState(false)
   const [eventForm, setEventForm] = useState({
     title: '', date: format(new Date(), 'yyyy-MM-dd'),
-    category: 'Meeting', category_color: '#22C55E',
+    category: 'Meeting', sub_category: '', category_color: '#22C55E',
     start_time: '', end_time: '', all_day: true, notes: ''
   })
   const today = format(new Date(), 'yyyy-MM-dd')
@@ -52,19 +54,18 @@ export default function Dashboard() {
     if (hl.data) setHabitLogs(hl.data)
     if (ev.data) setEvents(ev.data)
     if (tr.data) setTransactions(tr.data)
-    if (cats.data) {
+    if (cats.data && cats.data.length > 0) {
       setCategories(cats.data)
     } else {
-      // Insert defaults if empty
       const defaults = [
-        { name: 'Meeting', color: '#22C55E', icon: '🤝', is_important: true, user_id: u.id },
-        { name: 'Exam', color: '#5B7FFF', icon: '📝', is_important: true, user_id: u.id },
-        { name: 'Deadline', color: '#EF4444', icon: '⏰', is_important: true, user_id: u.id },
-        { name: 'Birthday', color: '#FF6B8A', icon: '🎂', is_important: true, user_id: u.id },
-        { name: 'Church', color: '#8B5CF6', icon: '📿', is_important: true, user_id: u.id },
-        { name: 'Travel', color: '#14B8A6', icon: '✈️', is_important: false, user_id: u.id },
-        { name: 'Payment Due', color: '#F97316', icon: '💳', is_important: true, user_id: u.id },
-        { name: 'Personal', color: '#9090A8', icon: '🌸', is_important: false, user_id: u.id },
+        { name: 'Meeting', color: '#22C55E', icon: '🤝', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Exam', color: '#5B7FFF', icon: '📝', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Deadline', color: '#EF4444', icon: '⏰', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Birthday', color: '#FF6B8A', icon: '🎂', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Church', color: '#8B5CF6', icon: '📿', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Travel', color: '#14B8A6', icon: '✈️', is_important: false, parent_id: null, user_id: u.id },
+        { name: 'Payment Due', color: '#F97316', icon: '💳', is_important: true, parent_id: null, user_id: u.id },
+        { name: 'Personal', color: '#9090A8', icon: '🌸', is_important: false, parent_id: null, user_id: u.id },
       ]
       await supabase.from('calendar_categories').insert(defaults)
       const { data: fresh } = await supabase.from('calendar_categories').select('*').eq('user_id', u.id).order('created_at')
@@ -92,6 +93,7 @@ export default function Dashboard() {
       title: eventForm.title,
       date: eventForm.date,
       category: eventForm.category,
+      sub_category: eventForm.sub_category || null,
       category_color: eventForm.category_color,
       start_time: eventForm.start_time || null,
       end_time: eventForm.end_time || null,
@@ -101,7 +103,7 @@ export default function Dashboard() {
     })
     if (error) { alert('Error: ' + error.message); return }
     setShowAddEvent(false)
-    setEventForm({ title: '', date: format(new Date(), 'yyyy-MM-dd'), category: 'Meeting', category_color: '#22C55E', start_time: '', end_time: '', all_day: true, notes: '' })
+    setEventForm({ title: '', date: format(new Date(), 'yyyy-MM-dd'), category: 'Meeting', sub_category: '', category_color: '#22C55E', start_time: '', end_time: '', all_day: true, notes: '' })
     load()
   }
 
@@ -114,47 +116,79 @@ export default function Dashboard() {
     if (!newCatName.trim()) return
     const { data: { user: u } } = await supabase.auth.getUser()
     if (!u) return
+    const parentCat = categories.find(c => c.name === newCatParent)
+    const color = parentCat ? parentCat.color : newCatColor
     await supabase.from('calendar_categories').insert({
-      name: newCatName, color: newCatColor, icon: newCatIcon,
-      is_important: false, user_id: u.id
+      name: newCatName,
+      color,
+      icon: newCatIcon,
+      is_important: newCatImportant,
+      parent_id: parentCat?.id || null,
+      user_id: u.id
     })
     setNewCatName(''); setNewCatColor('#5B7FFF'); setNewCatIcon('📅')
+    setNewCatParent(''); setNewCatImportant(false)
     load()
   }
 
   async function deleteCategory(id: string) {
-    if (!confirm('Delete this category?')) return
+    if (!confirm('Delete this category? Sub-categories will also be deleted.')) return
     await supabase.from('calendar_categories').delete().eq('id', id)
     load()
   }
+
+  async function toggleImportant(id: string, current: boolean) {
+    await supabase.from('calendar_categories').update({ is_important: !current }).eq('id', id)
+    load()
+  }
+
+  // Parent categories (no parent_id)
+  const parentCats = categories.filter(c => !c.parent_id)
+  // Get sub-categories for a parent
+  const subCats = (parentId: string) => categories.filter(c => c.parent_id === parentId)
+  // Get sub-cats for selected category in event form
+  const selectedParentCat = categories.find(c => c.name === eventForm.category)
+  const subCatsForSelected = selectedParentCat ? subCats(selectedParentCat.id) : []
 
   const days = eachDayOfInterval({ start: startOfMonth(calMonth), end: endOfMonth(calMonth) })
   const firstDay = startOfMonth(calMonth).getDay()
   const blanks = firstDay === 0 ? 6 : firstDay - 1
   const eventsOnDay = (dateStr: string) => events.filter(e => e.date === dateStr)
   const selectedEvents = selectedDate ? eventsOnDay(selectedDate) : []
+
+  // Important: only show future events or today
   const importantEvents = events.filter(e => {
     const cat = categories.find(c => c.name === e.category)
-    return cat?.is_important
-  })
+    const subCat = categories.find(c => c.name === e.sub_category)
+    const isImp = cat?.is_important || subCat?.is_important
+    return isImp && e.date >= today
+  }).sort((a, b) => a.date.localeCompare(b.date))
+
   const todayHabitsDone = habits.filter(h => habitLogs.some(l => l.habit_id === h.id && l.completed)).length
   const name = profile?.name || user?.email?.split('@')[0] || 'there'
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
-  const getCatColor = (cat: string) => {
+  const getCatColor = (cat: string, subCat?: string) => {
+    if (subCat) {
+      const found = categories.find(c => c.name === subCat)
+      if (found) return found.color
+    }
     const found = categories.find(c => c.name === cat)
     return found?.color || '#5B7FFF'
   }
 
-  const getCatIcon = (cat: string) => {
+  const getCatIcon = (cat: string, subCat?: string) => {
+    if (subCat) {
+      const found = categories.find(c => c.name === subCat)
+      if (found) return found.icon
+    }
     const found = categories.find(c => c.name === cat)
     return found?.icon || '📅'
   }
 
   return (
     <div>
-      {/* Header */}
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-xl font-bold">{greeting}, {name} ☀️</h1>
@@ -164,42 +198,92 @@ export default function Dashboard() {
 
       {/* Manage Categories Modal */}
       {showManageCats && (
-        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center" onClick={() => setShowManageCats(false)}>
-          <div className="bg-white rounded-2xl p-5 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" onClick={() => setShowManageCats(false)}>
+          <div className="bg-white rounded-2xl p-5 w-full max-w-lg shadow-xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-base">Manage Categories 🎨</h2>
               <button onClick={() => setShowManageCats(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
             </div>
-            <div className="flex flex-col gap-1.5 mb-4 max-h-48 overflow-y-auto">
-              {categories.map(cat => (
-                <div key={cat.id} className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-xl group">
-                  <div className="w-5 h-5 rounded-full flex-shrink-0" style={{ background: cat.color }} />
-                  <span className="text-sm flex-1">{cat.icon} {cat.name}</span>
-                  {cat.is_important && <span className="text-[10px] text-orange-500 font-semibold">⚡</span>}
-                  <button onClick={() => deleteCategory(cat.id)}
-                    className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-xs transition-all">🗑️</button>
+
+            {/* Existing categories with sub-cats */}
+            <div className="flex flex-col gap-1 mb-4">
+              {parentCats.map(cat => (
+                <div key={cat.id}>
+                  {/* Parent */}
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-xl group">
+                    <div className="w-5 h-5 rounded-full flex-shrink-0" style={{ background: cat.color }} />
+                    <span className="text-sm flex-1 font-semibold">{cat.icon} {cat.name}</span>
+                    {/* Important toggle */}
+                    <div onClick={() => toggleImportant(cat.id, cat.is_important)}
+                      className={`w-8 h-4 rounded-full cursor-pointer transition-all relative flex-shrink-0 ${cat.is_important ? 'bg-orange-400' : 'bg-gray-200'}`}
+                      title={cat.is_important ? 'Remove from Important' : 'Mark as Important'}>
+                      <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all ${cat.is_important ? 'right-0.5' : 'left-0.5'}`} />
+                    </div>
+                    {cat.is_important && <span className="text-[10px] text-orange-500 font-bold">⚡</span>}
+                    <button onClick={() => deleteCategory(cat.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-xs transition-all">🗑️</button>
+                  </div>
+                  {/* Sub-categories */}
+                  {subCats(cat.id).map(sub => (
+                    <div key={sub.id} className="flex items-center gap-2 px-3 py-1.5 ml-6 bg-white border border-gray-100 rounded-xl mt-0.5 group">
+                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: sub.color }} />
+                      <span className="text-xs flex-1">{sub.icon} {sub.name}</span>
+                      <div onClick={() => toggleImportant(sub.id, sub.is_important)}
+                        className={`w-8 h-4 rounded-full cursor-pointer transition-all relative flex-shrink-0 ${sub.is_important ? 'bg-orange-400' : 'bg-gray-200'}`}>
+                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all ${sub.is_important ? 'right-0.5' : 'left-0.5'}`} />
+                      </div>
+                      {sub.is_important && <span className="text-[10px] text-orange-500 font-bold">⚡</span>}
+                      <button onClick={() => deleteCategory(sub.id)}
+                        className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-xs transition-all">🗑️</button>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
+
+            {/* Add new */}
             <div className="border-t border-gray-100 pt-3">
-              <div className="text-xs font-bold text-gray-400 uppercase mb-2">+ Add New</div>
+              <div className="text-xs font-bold text-gray-400 uppercase mb-2">+ Add Category / Sub-category</div>
               <div className="flex gap-2 mb-2">
-                <input className="inp flex-1 text-xs" placeholder="Category name"
+                <input className="inp flex-1 text-xs" placeholder="Name (e.g. College, Exam)"
                   value={newCatName} onChange={e => setNewCatName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && addCategory()} autoFocus />
                 <input type="color" value={newCatColor} onChange={e => setNewCatColor(e.target.value)}
                   className="w-9 h-9 rounded-lg cursor-pointer border border-gray-200" />
               </div>
-              <div className="flex gap-1.5 flex-wrap mb-3">
-                {['📅','📝','⏰','🎂','📿','✈️','💳','🏠','💼','🎯','🏥','🎓','🌸','⚽','🎵'].map(ic => (
+
+              {/* Parent selector */}
+              <div className="mb-2">
+                <label className="text-xs text-gray-400 block mb-1">Sub-category of: (leave empty for main category)</label>
+                <select className="sel w-full text-xs" value={newCatParent} onChange={e => setNewCatParent(e.target.value)}>
+                  <option value="">— Main category (no parent) —</option>
+                  {parentCats.map(c => (
+                    <option key={c.id} value={c.name}>{c.icon} {c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Icon picker */}
+              <div className="flex gap-1.5 flex-wrap mb-2">
+                {['📅','📝','⏰','🎂','📿','✈️','💳','🏠','💼','🎯','🏥','🎓','🌸','⚽','🎵','📖','🧪','💻','🤝','🏋️'].map(ic => (
                   <button key={ic} onClick={() => setNewCatIcon(ic)}
                     className={`w-7 h-7 rounded-lg text-sm transition-all ${newCatIcon === ic ? 'bg-blue-100 ring-2 ring-blue-400' : 'bg-gray-100 hover:bg-gray-200'}`}>
                     {ic}
                   </button>
                 ))}
               </div>
+
+              {/* Important toggle */}
+              <div className="flex items-center gap-2 mb-3">
+                <div onClick={() => setNewCatImportant(!newCatImportant)}
+                  className={`w-9 h-5 rounded-full cursor-pointer transition-all relative ${newCatImportant ? 'bg-orange-400' : 'bg-gray-200'}`}>
+                  <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${newCatImportant ? 'right-0.5' : 'left-0.5'}`} />
+                </div>
+                <span className="text-xs text-gray-500">Mark as <b>Important ⚡</b> (shows on Dashboard)</span>
+              </div>
+
               <button className="btn-blue w-full text-xs" onClick={addCategory}>
-                + Add Category
+                + Add {newCatParent ? `Sub-category under "${newCatParent}"` : 'Category'}
               </button>
             </div>
           </div>
@@ -235,16 +319,32 @@ export default function Dashboard() {
                   onKeyDown={e => e.key === 'Enter' && addEvent()} autoFocus />
                 <input type="date" className="sel text-xs" value={eventForm.date}
                   onChange={e => setEventForm({ ...eventForm, date: e.target.value })} />
-                <select className="sel text-xs" value={eventForm.category} onChange={e => {
+              </div>
+              <div className="flex gap-2 flex-wrap mb-2">
+                {/* Category */}
+                <select className="sel text-xs flex-1" value={eventForm.category} onChange={e => {
                   if (e.target.value === '__manage__') { setShowManageCats(true); return }
                   const cat = categories.find(c => c.name === e.target.value)
-                  setEventForm({ ...eventForm, category: e.target.value, category_color: cat?.color || '#5B7FFF' })
+                  setEventForm({ ...eventForm, category: e.target.value, sub_category: '', category_color: cat?.color || '#5B7FFF' })
                 }}>
-                  {categories.map(c => (
+                  {parentCats.map(c => (
                     <option key={c.id} value={c.name}>{c.icon} {c.name}</option>
                   ))}
                   <option value="__manage__">⚙️ Manage categories...</option>
                 </select>
+                {/* Sub-category — only show if parent has sub-cats */}
+                {subCatsForSelected.length > 0 && (
+                  <select className="sel text-xs flex-1" value={eventForm.sub_category}
+                    onChange={e => {
+                      const sub = categories.find(c => c.name === e.target.value)
+                      setEventForm({ ...eventForm, sub_category: e.target.value, category_color: sub?.color || eventForm.category_color })
+                    }}>
+                    <option value="">— No sub-category —</option>
+                    {subCatsForSelected.map(s => (
+                      <option key={s.id} value={s.name}>{s.icon} {s.name}</option>
+                    ))}
+                  </select>
+                )}
               </div>
               <div className="flex gap-2 mb-2">
                 <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
@@ -293,9 +393,10 @@ export default function Dashboard() {
                       {format(day, 'd')}
                     </div>
                     {dayEvents.slice(0, 2).map(ev => (
-                      <div key={ev.id} className="text-[9px] font-semibold px-1 py-0.5 rounded mb-0.5 truncate text-white"
-                        style={{ background: getCatColor(ev.category) }}>
-                        {ev.title}
+                      <div key={ev.id} className="text-[9px] font-semibold px-1 py-0.5 rounded mb-0.5 truncate text-white flex items-center gap-0.5"
+                        style={{ background: getCatColor(ev.category, ev.sub_category) }}>
+                        <span>{getCatIcon(ev.category, ev.sub_category)}</span>
+                        <span className="truncate">{ev.title}</span>
                       </div>
                     ))}
                     {dayEvents.length > 2 && (
@@ -323,12 +424,12 @@ export default function Dashboard() {
                 <div className="text-xs text-gray-400 italic">No events. Click + Add to create one.</div>
               ) : selectedEvents.map(ev => (
                 <div key={ev.id} className="flex items-center gap-2 mb-1.5 group">
-                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: getCatColor(ev.category) }} />
+                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: getCatColor(ev.category, ev.sub_category) }} />
                   <span className="text-sm flex-1 font-medium">{ev.title}</span>
                   {ev.start_time && <span className="text-xs text-gray-400">{ev.start_time}</span>}
                   <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
-                    style={{ background: getCatColor(ev.category) }}>
-                    {getCatIcon(ev.category)} {ev.category}
+                    style={{ background: getCatColor(ev.category, ev.sub_category) }}>
+                    {getCatIcon(ev.category, ev.sub_category)} {ev.sub_category || ev.category}
                   </span>
                   <button onClick={() => deleteEvent(ev.id)}
                     className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
@@ -340,23 +441,24 @@ export default function Dashboard() {
           )}
 
           <div className="flex gap-2 px-4 py-2.5 border-t border-gray-100 flex-wrap">
-            {categories.slice(0, 6).map(cat => (
+            {parentCats.slice(0, 6).map(cat => (
               <div key={cat.name} className="flex items-center gap-1">
                 <div className="w-2 h-2 rounded-full" style={{ background: cat.color }} />
-                <span className="text-[10px] text-gray-400">{cat.name}</span>
+                <span className="text-[10px] text-gray-400">{cat.icon} {cat.name}</span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* IMPORTANT */}
+        {/* IMPORTANT — only today & future */}
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
             <span className="text-xs font-bold text-red-500 uppercase tracking-wide">⚡ Important</span>
+            <span className="text-[10px] text-gray-400">Today & upcoming only</span>
           </div>
           {importantEvents.length === 0 ? (
             <div className="p-5 text-center text-gray-400 text-xs">
-              No important events this month.<br />
+              No upcoming important events.<br />
               <span className="text-blue-500 cursor-pointer font-semibold" onClick={() => setShowManageCats(true)}>
                 Mark a category as Important →
               </span>
@@ -366,18 +468,18 @@ export default function Dashboard() {
               {importantEvents.slice(0, 8).map(ev => (
                 <div key={ev.id} className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50">
                   <div className="w-8 h-8 rounded-xl flex flex-col items-center justify-center flex-shrink-0 text-white"
-                    style={{ background: getCatColor(ev.category) }}>
+                    style={{ background: getCatColor(ev.category, ev.sub_category) }}>
                     <span className="text-xs font-bold leading-none">{format(new Date(ev.date + 'T00:00:00'), 'd')}</span>
                     <span className="text-[8px] uppercase">{format(new Date(ev.date + 'T00:00:00'), 'MMM')}</span>
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-semibold truncate">{ev.title}</div>
                     <div className="text-[10px] text-gray-400">
-                      {getCatIcon(ev.category)} {ev.category}
+                      {getCatIcon(ev.category, ev.sub_category)} {ev.sub_category ? `${ev.category} · ${ev.sub_category}` : ev.category}
                       {ev.start_time ? ` · ${ev.start_time}` : ''}
                     </div>
                   </div>
-                  <div className={`text-[10px] font-bold ${ev.date === today ? 'text-red-500' : 'text-gray-400'}`}>
+                  <div className={`text-[10px] font-bold flex-shrink-0 ${ev.date === today ? 'text-red-500' : 'text-gray-400'}`}>
                     {ev.date === today ? 'TODAY' : format(new Date(ev.date + 'T00:00:00'), 'MMM d')}
                   </div>
                 </div>
