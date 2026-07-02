@@ -1,142 +1,271 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { format, addDays, subDays } from 'date-fns'
-import { Plus, Trash2 } from 'lucide-react'
-
-const sections = [
-  {key:'task_received', label:'Tasks Received Today', icon:'📥', color:'text-blue-500', bg:'bg-blue-50', hint:'New tasks added today...'},
-  {key:'accomplishment', label:"Today's Accomplishments", icon:'🏆', color:'text-green-600', bg:'bg-green-50', hint:'What did you accomplish...'},
-  {key:'work_log', label:'Daily Work Log', icon:'📋', color:'text-purple-600', bg:'bg-purple-50', hint:'Work activity, client update...'},
-]
+import { format } from 'date-fns'
+import { Plus, Trash2, X } from 'lucide-react'
 
 export default function DailyLogPage() {
-  const [date, setDate] = useState(new Date())
   const [logs, setLogs] = useState<any[]>([])
+  const [todos, setTodos] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [inputs, setInputs] = useState<Record<string,string>>({})
-  const [cats, setCats] = useState<Record<string,string>>({})
+  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [showAddLog, setShowAddLog] = useState<string | null>(null)
+  const [logForm, setLogForm] = useState({ content: '', type: 'work_log' })
 
-  useEffect(() => { load() }, [date])
+  useEffect(() => { load() }, [selectedDate])
 
   async function load() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
-    const { data } = await supabase.from('daily_logs').select('*')
-      .eq('user_id', user.id).eq('date', format(date,'yyyy-MM-dd')).order('created_at')
-    if (data) setLogs(data)
+
+    // Fetch daily logs
+    const { data: logsData } = await supabase.from('daily_logs')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('date', selectedDate)
+      .order('created_at', { ascending: false })
+
+    // Fetch todos (all, to check which ones are from today)
+    const { data: todosData } = await supabase.from('todos')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+
+    if (logsData) setLogs(logsData)
+    if (todosData) setTodos(todosData)
     setLoading(false)
   }
 
-  async function add(type: string) {
-    const content = inputs[type]
-    if (!content?.trim()) return
+  async function addLog() {
+    if (!logForm.content.trim()) return
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
+
     await supabase.from('daily_logs').insert({
-      date: format(date,'yyyy-MM-dd'), type, content,
-      category: cats[type]||'General',
-      time_logged: format(new Date(),'HH:mm'),
       user_id: user.id,
+      date: selectedDate,
+      type: logForm.type,
+      content: logForm.content,
+      time_logged: format(new Date(), 'HH:mm'),
     })
-    setInputs(p=>({...p,[type]:''}))
+    setLogForm({ content: '', type: 'work_log' })
+    setShowAddLog(null)
     load()
   }
 
-  async function del(id: string) {
+  async function deleteLog(id: string) {
+    if (!confirm('Delete this log?')) return
     await supabase.from('daily_logs').delete().eq('id', id)
     load()
   }
 
-  const byType = (t: string) => logs.filter(l=>l.type===t)
+  async function markTodoDone(todoId: string, title: string) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    // Mark todo as done
+    await supabase.from('todos').update({ status: 'done' }).eq('id', todoId)
+
+    // Add to accomplishments
+    await supabase.from('daily_logs').insert({
+      user_id: user.id,
+      date: selectedDate,
+      type: 'accomplishment',
+      content: title,
+      time_logged: format(new Date(), 'HH:mm'),
+    })
+    load()
+  }
+
+  // Get tasks received today (todos created today or with deadline today)
+  const tasksReceived = todos.filter(t => {
+    const createdDate = format(new Date(t.created_at), 'yyyy-MM-dd')
+    const deadlineMatch = t.deadline === selectedDate
+    return createdDate === selectedDate || deadlineMatch
+  })
+
+  // Get accomplishments (todos marked done today + daily logs)
+  const accomplishmentLogs = logs.filter(l => l.type === 'accomplishment')
+  const completedTodos = todos.filter(t =>
+    t.status === 'done' && t.updated_at && format(new Date(t.updated_at), 'yyyy-MM-dd') === selectedDate
+  )
+
+  // Get work logs
+  const workLogs = logs.filter(l => l.type === 'work_log')
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-xl font-bold">Daily Log 📝</h1>
-          <p className="text-xs text-gray-400 mt-0.5">1 page per day · add tasks, accomplishments & work log</p>
+          <p className="text-xs text-gray-400 mt-0.5">Track your tasks, accomplishments & work</p>
         </div>
       </div>
 
-      {/* Date nav */}
-      <div className="flex items-center justify-between bg-white border border-gray-100 rounded-xl px-4 py-3 mb-4 shadow-sm">
-        <button className="btn-gray text-xs" onClick={()=>setDate(subDays(date,1))}>‹ Yesterday</button>
-        <div className="text-center">
-          <div className="font-bold text-[16px]">{format(date,'EEEE, MMMM d, yyyy')}</div>
-          <div className="text-xs text-gray-400 mt-0.5">Day {format(date,'d')} of May</div>
-        </div>
-        <div className="flex gap-2">
-          <button className="btn-blue text-xs" onClick={()=>setDate(new Date())}>Today</button>
-          <button className="btn-gray text-xs" onClick={()=>setDate(addDays(date,1))}>Tomorrow ›</button>
-        </div>
+      {/* Date picker */}
+      <div className="flex items-center gap-2 mb-4 bg-white border border-gray-100 rounded-xl px-4 py-3">
+        <button onClick={() => setSelectedDate(format(new Date(selectedDate).getTime() - 86400000, 'yyyy-MM-dd'))}
+          className="btn-gray text-xs">‹ Prev day</button>
+        <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+          className="sel text-xs flex-1" />
+        <button onClick={() => setSelectedDate(format(new Date(selectedDate).getTime() + 86400000, 'yyyy-MM-dd'))}
+          className="btn-gray text-xs">Next day ›</button>
+        <button onClick={() => setSelectedDate(format(new Date(), 'yyyy-MM-dd'))}
+          className="btn-blue text-xs">Today</button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        {sections.map(s=>(
-          <div key={s.key} className={`${s.bg} border border-gray-100 rounded-xl p-3 flex items-center gap-3`}>
-            <span className="text-2xl">{s.icon}</span>
-            <div>
-              <div className={`text-xl font-bold ${s.color}`}>{byType(s.key).length}</div>
-              <div className="text-[11px] text-gray-400">{s.label}</div>
+      {loading ? (
+        <div className="text-center py-10 text-gray-400">Loading...</div>
+      ) : (
+        <>
+          {/* TASKS RECEIVED TODAY */}
+          <div className="card mb-4">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-blue-50">
+              <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">📥 Tasks Received Today</span>
+              <span className="tag bg-blue-100 text-blue-600 text-xs">{tasksReceived.length}</span>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* 3 columns */}
-      <div className="grid grid-cols-3 gap-4">
-        {sections.map(s=>(
-          <div key={s.key} className="card">
-            <div className={`flex items-center justify-between px-4 py-3 border-b border-gray-100 ${s.bg}`}>
-              <div className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wide ${s.color}`}>
-                <span>{s.icon}</span>{s.label}
-              </div>
-              <span className={`text-xs font-semibold ${s.color}`}>{byType(s.key).length}</span>
-            </div>
-
-            {/* Input */}
-            <div className="flex gap-2 p-3 border-b border-gray-100">
-              {s.key==='work_log' && (
-                <select className="sel text-xs w-24 flex-shrink-0"
-                  value={cats[s.key]||'General'} onChange={e=>setCats(p=>({...p,[s.key]:e.target.value}))}>
-                  {['General','Bisnis','Personal','Finance','China'].map(c=><option key={c}>{c}</option>)}
-                </select>
-              )}
-              <input className="inp text-xs flex-1" placeholder={s.hint}
-                value={inputs[s.key]||''} onChange={e=>setInputs(p=>({...p,[s.key]:e.target.value}))}
-                onKeyDown={e=>e.key==='Enter'&&add(s.key)} />
-              <button onClick={()=>add(s.key)} className="w-8 h-8 rounded-xl bg-blue-500 text-white flex items-center justify-center flex-shrink-0">
-                <Plus size={15}/>
-              </button>
-            </div>
-
-            {/* Items */}
-            {loading ? <div className="p-4 text-xs text-center text-gray-400">Loading...</div> :
-             byType(s.key).length === 0 ? (
-              <div className="p-4 text-xs text-center text-gray-400 italic">Nothing yet. Add above!</div>
+            {tasksReceived.length === 0 ? (
+              <div className="p-6 text-center text-gray-400 text-xs">No tasks received today</div>
             ) : (
-              <div className="divide-y divide-gray-100">
-                {byType(s.key).map(log=>(
-                  <div key={log.id} className="flex items-start gap-2 px-4 py-2.5 hover:bg-gray-50 group">
-                    {s.key!=='work_log' && <div className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0 mt-1.5"/>}
-                    {s.key==='work_log' && <span className="tag bg-gray-100 text-gray-500 text-[9px] flex-shrink-0 mt-0.5">{log.category}</span>}
+              <div>
+                {tasksReceived.map(t => (
+                  <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 group">
+                    <div className={`w-4 h-4 rounded border-2 flex-shrink-0 cursor-pointer transition-all
+                      ${t.status === 'done' ? 'bg-green-500 border-green-500' : 'border-gray-300 hover:border-green-400'}`}
+                      onClick={() => markTodoDone(t.id, t.title)} />
                     <div className="flex-1">
-                      <div className="text-xs leading-relaxed">{log.content}</div>
-                      {log.time_logged && <div className="text-[10px] text-gray-400 mt-0.5">{log.time_logged}</div>}
+                      <div className={`text-sm ${t.status === 'done' ? 'line-through text-gray-400' : ''}`}>
+                        {t.title}
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        {t.category}
+                        {t.deadline && ` · Deadline: ${t.deadline}`}
+                      </div>
                     </div>
-                    <button onClick={()=>del(log.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all flex-shrink-0">
-                      <Trash2 size={12}/>
-                    </button>
+                    {t.status !== 'done' && (
+                      <button onClick={() => markTodoDone(t.id, t.title)}
+                        className="opacity-0 group-hover:opacity-100 text-xs text-blue-500 font-semibold transition-all">
+                        Mark done
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </div>
-        ))}
-      </div>
+
+          {/* TODAY'S ACCOMPLISHMENTS */}
+          <div className="card mb-4">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-green-50">
+              <span className="text-xs font-bold text-green-600 uppercase tracking-wide">🏆 Today's Accomplishments</span>
+              <span className="tag bg-green-100 text-green-600 text-xs">{accomplishmentLogs.length + completedTodos.length}</span>
+            </div>
+            {accomplishmentLogs.length === 0 && completedTodos.length === 0 ? (
+              <div className="p-6 text-center text-gray-400 text-xs">
+                Complete tasks to see them here
+              </div>
+            ) : (
+              <div>
+                {/* From completed todos */}
+                {completedTodos.map(t => (
+                  <div key={`todo-${t.id}`} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0 group hover:bg-gray-50">
+                    <div className="w-4 h-4 rounded-full bg-green-500 flex-shrink-0" />
+                    <div className="flex-1">
+                      <div className="text-sm line-through text-gray-600">{t.title}</div>
+                      <div className="text-xs text-gray-400">{t.category}</div>
+                    </div>
+                    <button onClick={() => deleteLog(t.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+                {/* From daily logs */}
+                {accomplishmentLogs.map(log => (
+                  <div key={log.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0 group hover:bg-gray-50">
+                    <div className="w-4 h-4 rounded-full bg-green-500 flex-shrink-0" />
+                    <div className="flex-1">
+                      <div className="text-sm">{log.content}</div>
+                      <div className="text-xs text-gray-400">{log.time_logged}</div>
+                    </div>
+                    <button onClick={() => deleteLog(log.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(accomplishmentLogs.length > 0 || completedTodos.length > 0) && (
+              <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50 text-center">
+                <button onClick={() => { setShowAddLog('accomplishment'); setLogForm({ ...logForm, type: 'accomplishment' }) }}
+                  className="text-xs text-green-600 font-semibold hover:underline">
+                  + Add more accomplishments
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* DAILY WORK LOG */}
+          <div className="card">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-orange-50">
+              <span className="text-xs font-bold text-orange-600 uppercase tracking-wide">📋 Daily Work Log</span>
+              <span className="tag bg-orange-100 text-orange-600 text-xs">{workLogs.length}</span>
+            </div>
+            {workLogs.length === 0 ? (
+              <div className="p-6 text-center text-gray-400 text-xs">No work logged yet</div>
+            ) : (
+              <div>
+                {workLogs.map(log => (
+                  <div key={log.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0 group hover:bg-gray-50">
+                    <div className="w-4 h-4 rounded-full bg-orange-400 flex-shrink-0" />
+                    <div className="flex-1">
+                      <div className="text-sm">{log.content}</div>
+                      <div className="text-xs text-gray-400">{log.category} · {log.time_logged}</div>
+                    </div>
+                    <button onClick={() => deleteLog(log.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
+              <button onClick={() => { setShowAddLog('work_log'); setLogForm({ ...logForm, type: 'work_log' }) }}
+                className="flex items-center gap-1.5 text-xs text-orange-600 font-semibold hover:underline w-full justify-center">
+                <Plus size={13} /> Add work log entry
+              </button>
+            </div>
+          </div>
+
+          {/* Add Log Modal */}
+          {showAddLog && (
+            <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4"
+              onClick={() => setShowAddLog(null)}>
+              <div className="bg-white rounded-2xl p-5 w-full max-w-md shadow-xl"
+                onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-bold text-base">
+                    Add {showAddLog === 'work_log' ? 'Work Log' : 'Accomplishment'}
+                  </h2>
+                  <button onClick={() => setShowAddLog(null)} className="text-gray-400 hover:text-gray-600">
+                    <X size={16} />
+                  </button>
+                </div>
+                <textarea className="inp text-xs resize-none mb-3" rows={3} placeholder="What did you accomplish / work on?"
+                  value={logForm.content} onChange={e => setLogForm({ ...logForm, content: e.target.value })}
+                  autoFocus />
+                <div className="flex gap-2">
+                  <button className="btn-blue flex-1" onClick={addLog}>Save</button>
+                  <button className="btn-gray flex-1" onClick={() => setShowAddLog(null)}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
