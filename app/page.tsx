@@ -24,6 +24,8 @@ export default function Dashboard() {
   const [newCatParent, setNewCatParent] = useState('')
   const [newCatImportant, setNewCatImportant] = useState(false)
   const [selectedEvent, setSelectedEvent] = useState<any>(null)
+  const [editingCatId, setEditingCatId] = useState<string | null>(null)
+  const [editingCatColor, setEditingCatColor] = useState('')
   const [eventForm, setEventForm] = useState({
     title: '', date: format(new Date(), 'yyyy-MM-dd'),
     category: 'Meeting', sub_category: '', category_color: '#22C55E',
@@ -104,7 +106,6 @@ export default function Dashboard() {
     })
     if (error) { alert('Error: ' + error.message); return }
 
-    // FIX 1: Add to daily log "tasks received today" if event is today
     if (eventForm.date === today) {
       await supabase.from('daily_logs').insert({
         user_id: u.id,
@@ -125,7 +126,6 @@ export default function Dashboard() {
     load()
   }
 
-  // FIX 2: Delete event properly
   async function deleteEvent(id: string) {
     if (!confirm('Delete this event?')) return
     const { error } = await supabase.from('events').delete().eq('id', id)
@@ -164,9 +164,9 @@ export default function Dashboard() {
     load()
   }
 
-  // FIX 3: Update category color
   async function updateCatColor(id: string, color: string) {
     await supabase.from('calendar_categories').update({ color }).eq('id', id)
+    setEditingCatId(null)
     load()
   }
 
@@ -222,7 +222,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Event Detail Modal — FIX 2: shows notes, has delete button */}
       {selectedEvent && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4"
           onClick={() => setSelectedEvent(null)}>
@@ -263,7 +262,6 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* FIX 2: Notes visible */}
             {selectedEvent.notes && (
               <div className="bg-gray-50 rounded-xl p-3 mb-4 text-sm text-gray-600 leading-relaxed">
                 <div className="text-xs font-bold text-gray-400 uppercase mb-1">📝 Notes</div>
@@ -284,7 +282,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Manage Categories Modal — FIX 3: color editable */}
       {showManageCats && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4"
           onClick={() => setShowManageCats(false)}>
@@ -301,26 +298,20 @@ export default function Dashboard() {
               {parentCats.map(cat => (
                 <div key={cat.id}>
                   <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50 rounded-xl group">
-                    {/* FIX 3: Color picker clickable */}
-                    <div className="relative flex-shrink-0" title="Click to change color">
+                    <div className="relative flex-shrink-0">
                       <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer hover:scale-110 transition-all"
-                        style={{ background: cat.color }}>
-                        {cat.icon}
+                        style={{ background: editingCatId === cat.id ? '#e5e7eb' : cat.color }}
+                        onClick={() => { setEditingCatId(cat.id); setEditingCatColor(cat.color) }}>
+                        {editingCatId === cat.id ? '✏️' : cat.icon}
                       </div>
-                      <input type="color" value={cat.color}
-                        onChange={e => updateCatColor(cat.id, e.target.value)}
-                        className="absolute inset-0 opacity-0 w-full h-full cursor-pointer rounded-full" />
+                      {editingCatId === cat.id && (
+                        <input type="color" value={editingCatColor}
+                          onChange={e => setEditingCatColor(e.target.value)}
+                          onBlur={() => updateCatColor(cat.id, editingCatColor)}
+                          autoFocus className="absolute inset-0 opacity-0 w-full h-full cursor-pointer rounded-full" />
+                      )}
                     </div>
                     <span className="text-sm flex-1 font-semibold">{cat.name}</span>
-                    {/* Icon picker */}
-                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
-                      {['📅','📝','⏰','🎂','📿','✈️','💳','🏠','💼','🎯'].map(ic => (
-                        <button key={ic} onClick={() => updateCatIcon(cat.id, ic)}
-                          className={`w-5 h-5 rounded text-xs hover:bg-white transition-all ${cat.icon === ic ? 'bg-blue-100' : ''}`}>
-                          {ic}
-                        </button>
-                      ))}
-                    </div>
                     <div onClick={() => toggleImportant(cat.id, cat.is_important)}
                       className={`w-8 h-4 rounded-full cursor-pointer transition-all relative flex-shrink-0
                         ${cat.is_important ? 'bg-orange-400' : 'bg-gray-200'}`}>
@@ -337,10 +328,15 @@ export default function Dashboard() {
                     <div key={sub.id} className="flex items-center gap-2 px-3 py-2 ml-6 bg-white border border-gray-100 rounded-xl mt-0.5 group">
                       <div className="relative flex-shrink-0">
                         <div className="w-5 h-5 rounded-full cursor-pointer hover:scale-110 transition-all"
-                          style={{ background: sub.color }} />
-                        <input type="color" value={sub.color}
-                          onChange={e => updateCatColor(sub.id, e.target.value)}
-                          className="absolute inset-0 opacity-0 w-full h-full cursor-pointer rounded-full" />
+                          style={{ background: editingCatId === sub.id ? '#e5e7eb' : sub.color }}
+                          onClick={() => { setEditingCatId(sub.id); setEditingCatColor(sub.color) }}>
+                        </div>
+                        {editingCatId === sub.id && (
+                          <input type="color" value={editingCatColor}
+                            onChange={e => setEditingCatColor(e.target.value)}
+                            onBlur={() => updateCatColor(sub.id, editingCatColor)}
+                            autoFocus className="absolute inset-0 opacity-0 w-full h-full cursor-pointer rounded-full" />
+                        )}
                       </div>
                       <span className="text-xs flex-1">{sub.icon} {sub.name}</span>
                       <div onClick={() => toggleImportant(sub.id, sub.is_important)}
@@ -408,7 +404,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ROW 1: Calendar + Important */}
       <div className="grid grid-cols-[1fr_300px] gap-4 mb-4">
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
@@ -524,7 +519,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Selected date panel */}
           {selectedDate && (
             <div className="border-t border-gray-100 bg-gray-50 p-4">
               <div className="flex items-center justify-between mb-2">
@@ -571,7 +565,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* IMPORTANT */}
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
             <span className="text-xs font-bold text-red-500 uppercase tracking-wide">⚡ Important</span>
@@ -612,7 +605,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ROW 2: Habit + To Do */}
       <div className="grid grid-cols-2 gap-4 mb-4">
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-green-50">
@@ -685,7 +677,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ROW 3: Financial */}
       <div className="card">
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <span className="text-xs font-bold text-teal-500 uppercase tracking-wide">💰 Financial — Recent</span>
