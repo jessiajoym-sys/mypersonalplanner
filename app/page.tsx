@@ -9,6 +9,7 @@ export default function Dashboard() {
   const [user, setUser] = useState<any>(null)
   const [profile, setProfile] = useState<any>(null)
   const [todos, setTodos] = useState<any[]>([])
+  const [errands, setErrands] = useState<any[]>([])
   const [habits, setHabits] = useState<any[]>([])
   const [habitLogs, setHabitLogs] = useState<any[]>([])
   const [events, setEvents] = useState<any[]>([])
@@ -17,6 +18,7 @@ export default function Dashboard() {
   const [calMonth, setCalMonth] = useState(new Date())
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [showAddEvent, setShowAddEvent] = useState(false)
+  const [showAddErrand, setShowAddErrand] = useState(false)
   const [showManageCats, setShowManageCats] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [newCatColor, setNewCatColor] = useState('#5B7FFF')
@@ -26,6 +28,7 @@ export default function Dashboard() {
   const [selectedEvent, setSelectedEvent] = useState<any>(null)
   const [editingCatId, setEditingCatId] = useState<string | null>(null)
   const [editingCatColor, setEditingCatColor] = useState('')
+  const [newErrandTitle, setNewErrandTitle] = useState('')
   const [eventForm, setEventForm] = useState({
     title: '', date: format(new Date(), 'yyyy-MM-dd'),
     category: 'Meeting', sub_category: '', category_color: '#22C55E',
@@ -39,9 +42,10 @@ export default function Dashboard() {
     const { data: { user: u } } = await supabase.auth.getUser()
     if (!u) return
     setUser(u)
-    const [prof, td, hb, hl, ev, tr, cats] = await Promise.all([
+    const [prof, td, er, hb, hl, ev, tr, cats] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', u.id).single(),
       supabase.from('todos').select('*').eq('user_id', u.id).neq('status', 'done').order('created_at', { ascending: false }).limit(5),
+      supabase.from('errands').select('*').eq('user_id', u.id).eq('date', today).eq('completed', false).order('created_at'),
       supabase.from('habits').select('*').eq('user_id', u.id).eq('is_active', true),
       supabase.from('habit_logs').select('*').eq('user_id', u.id).eq('date', today),
       supabase.from('events').select('*').eq('user_id', u.id)
@@ -53,6 +57,7 @@ export default function Dashboard() {
     ])
     if (prof.data) setProfile(prof.data)
     if (td.data) setTodos(td.data)
+    if (er.data) setErrands(er.data)
     if (hb.data) setHabits(hb.data)
     if (hl.data) setHabitLogs(hl.data)
     if (ev.data) setEvents(ev.data)
@@ -74,6 +79,61 @@ export default function Dashboard() {
       const { data: fresh } = await supabase.from('calendar_categories').select('*').eq('user_id', u.id).order('created_at')
       if (fresh) setCategories(fresh)
     }
+  }
+
+  async function addErrand() {
+    if (!newErrandTitle.trim()) return
+    const { data: { user: u } } = await supabase.auth.getUser()
+    if (!u) return
+
+    const { error } = await supabase.from('errands').insert({
+      user_id: u.id,
+      title: newErrandTitle,
+      date: today,
+      completed: false,
+    })
+
+    if (error) { alert('Error: ' + error.message); return }
+
+    // Add to daily logs - Tasks Received Today
+    await supabase.from('daily_logs').insert({
+      user_id: u.id,
+      date: today,
+      type: 'task_received',
+      category: 'Errands',
+      content: `🛒 ${newErrandTitle}`,
+      time_logged: format(new Date(), 'HH:mm'),
+    })
+
+    setNewErrandTitle('')
+    setShowAddErrand(false)
+    load()
+  }
+
+  async function toggleErrand(errandId: string, title: string, currentCompleted: boolean) {
+    const { data: { user: u } } = await supabase.auth.getUser()
+    if (!u) return
+
+    await supabase.from('errands').update({ completed: !currentCompleted, updated_at: new Date() }).eq('id', errandId)
+
+    if (!currentCompleted) {
+      // Add to accomplishments
+      await supabase.from('daily_logs').insert({
+        user_id: u.id,
+        date: today,
+        type: 'accomplishment',
+        content: `✓ ${title}`,
+        time_logged: format(new Date(), 'HH:mm'),
+      })
+    }
+
+    load()
+  }
+
+  async function deleteErrand(errandId: string) {
+    if (!confirm('Delete this errand?')) return
+    await supabase.from('errands').delete().eq('id', errandId)
+    load()
   }
 
   async function toggleHabit(habitId: string) {
@@ -404,7 +464,9 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* TOP ROW: Calendar + Errands */}
       <div className="grid grid-cols-[1fr_300px] gap-4 mb-4">
+        {/* CALENDAR */}
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
@@ -565,54 +627,67 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* ERRANDS */}
         <div className="card">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-            <span className="text-xs font-bold text-red-500 uppercase tracking-wide">⚡ Important</span>
-            <span className="text-[10px] text-gray-400">Today & upcoming</span>
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-amber-50">
+            <span className="text-xs font-bold text-amber-600 uppercase tracking-wide">🛒 Errands</span>
+            <span className="tag bg-amber-100 text-amber-600 text-xs">{errands.length}</span>
           </div>
-          {importantEvents.length === 0 ? (
-            <div className="p-5 text-center text-gray-400 text-xs">
-              No upcoming important events.<br />
-              <span className="text-blue-500 cursor-pointer font-semibold"
-                onClick={() => setShowManageCats(true)}>
-                Mark a category as Important →
-              </span>
+          {errands.length === 0 ? (
+            <div className="p-4 text-center text-gray-400 text-xs">
+              No errands for today
             </div>
           ) : (
             <div className="divide-y divide-gray-50">
-              {importantEvents.slice(0, 8).map(ev => (
-                <div key={ev.id} className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 cursor-pointer"
-                  onClick={() => setSelectedEvent(ev)}>
-                  <div className="w-8 h-8 rounded-xl flex flex-col items-center justify-center flex-shrink-0 text-white"
-                    style={{ background: getCatColor(ev.category, ev.sub_category) }}>
-                    <span className="text-xs font-bold leading-none">{format(new Date(ev.date + 'T00:00:00'), 'd')}</span>
-                    <span className="text-[8px] uppercase">{format(new Date(ev.date + 'T00:00:00'), 'MMM')}</span>
+              {errands.map(e => (
+                <div key={e.id} className="flex items-center gap-2 px-4 py-3 hover:bg-gray-50 group">
+                  <div className={`w-4 h-4 rounded border-2 flex-shrink-0 cursor-pointer transition-all flex items-center justify-center text-[10px]
+                    ${e.completed ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 hover:border-green-400'}`}
+                    onClick={() => toggleErrand(e.id, e.title, e.completed)}>
+                    {e.completed && '✓'}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-semibold truncate">{ev.title}</div>
-                    <div className="text-[10px] text-gray-400">
-                      {getCatIcon(ev.category, ev.sub_category)} {ev.sub_category ? `${ev.category} · ${ev.sub_category}` : ev.category}
-                      {ev.start_time ? ` · ${ev.start_time}` : ''}
-                    </div>
-                  </div>
-                  <div className={`text-[10px] font-bold flex-shrink-0 ${ev.date === today ? 'text-red-500' : 'text-gray-400'}`}>
-                    {ev.date === today ? 'TODAY' : format(new Date(ev.date + 'T00:00:00'), 'MMM d')}
-                  </div>
+                  <span className={`flex-1 text-sm ${e.completed ? 'line-through text-gray-400' : ''}`}>
+                    {e.title}
+                  </span>
+                  <button onClick={() => deleteErrand(e.id)}
+                    className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                    <Trash2 size={13} />
+                  </button>
                 </div>
               ))}
+            </div>
+          )}
+          <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
+            <button onClick={() => setShowAddErrand(!showAddErrand)}
+              className="flex items-center gap-1.5 text-xs text-amber-600 font-semibold hover:underline w-full justify-center">
+              <Plus size={13} /> Add errand
+            </button>
+          </div>
+
+          {showAddErrand && (
+            <div className="border-t border-gray-100 bg-gray-50 p-3">
+              <div className="flex gap-2">
+                <input className="inp flex-1 text-xs" placeholder="New errand..."
+                  value={newErrandTitle} onChange={e => setNewErrandTitle(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addErrand()} autoFocus />
+                <button className="btn-blue btn-sm text-xs" onClick={addErrand}>Add</button>
+                <button className="btn-gray btn-sm text-xs" onClick={() => setShowAddErrand(false)}>✕</button>
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 mb-4">
+      {/* BOTTOM ROW: Daily Habits + Important + To Do */}
+      <div className="grid grid-cols-3 gap-4 mb-4">
+        {/* DAILY HABITS */}
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-green-50">
             <span className="text-xs font-bold text-green-600 uppercase tracking-wide">✅ Daily Habit</span>
             <Link href="/habit" className="text-xs text-green-600 font-semibold">View detail →</Link>
           </div>
           {habits.length === 0 ? (
-            <div className="p-5 text-center text-gray-400 text-xs">
+            <div className="p-4 text-center text-gray-400 text-xs">
               No habits yet. <Link href="/habit" className="text-blue-500 font-semibold">Add habits →</Link>
             </div>
           ) : (
@@ -627,7 +702,7 @@ export default function Dashboard() {
                       {done && '✓'}
                     </div>
                     <span className="text-base">{h.icon}</span>
-                    <span className={`flex-1 text-sm ${done ? 'line-through text-gray-400' : ''}`}>{h.name}</span>
+                    <span className={`flex-1 text-xs ${done ? 'line-through text-gray-400' : ''}`}>{h.name}</span>
                   </div>
                 )
               })}
@@ -645,38 +720,72 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* IMPORTANT */}
         <div className="card">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-            <span className="text-xs font-bold text-blue-500 uppercase tracking-wide">✅ To Do — Today</span>
+            <span className="text-xs font-bold text-red-500 uppercase tracking-wide">⚡ Important</span>
+            <span className="text-[10px] text-gray-400">Today & up</span>
+          </div>
+          {importantEvents.length === 0 ? (
+            <div className="p-4 text-center text-gray-400 text-xs">
+              No important events.<br />
+              <span className="text-blue-500 cursor-pointer font-semibold text-[10px]"
+                onClick={() => setShowManageCats(true)}>
+                Mark category as Important →
+              </span>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
+              {importantEvents.slice(0, 6).map(ev => (
+                <div key={ev.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 cursor-pointer"
+                  onClick={() => setSelectedEvent(ev)}>
+                  <div className="w-6 h-6 rounded-lg flex flex-col items-center justify-center flex-shrink-0 text-white text-[10px]"
+                    style={{ background: getCatColor(ev.category, ev.sub_category) }}>
+                    <span className="font-bold leading-none">{format(new Date(ev.date + 'T00:00:00'), 'd')}</span>
+                    <span className="text-[7px] uppercase">{format(new Date(ev.date + 'T00:00:00'), 'M')}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-semibold truncate">{ev.title}</div>
+                    <div className="text-[9px] text-gray-400 truncate">
+                      {ev.sub_category || ev.category}
+                    </div>
+                  </div>
+                  <div className={`text-[9px] font-bold flex-shrink-0 ${ev.date === today ? 'text-red-500' : 'text-gray-400'}`}>
+                    {ev.date === today ? 'T' : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* TO DO TODAY */}
+        <div className="card">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <span className="text-xs font-bold text-blue-500 uppercase tracking-wide">✅ To Do</span>
             <Link href="/todo" className="text-xs text-blue-500 font-semibold">View all →</Link>
           </div>
           {todos.length === 0 ? (
-            <div className="p-5 text-center text-gray-400 text-xs">
+            <div className="p-4 text-center text-gray-400 text-xs">
               No tasks. <Link href="/todo" className="text-blue-500 font-semibold">Add one →</Link>
             </div>
           ) : (
-            todos.map(t => (
-              <div key={t.id} className="flex items-center gap-2.5 px-4 py-2.5 border-b border-gray-50 last:border-0 hover:bg-gray-50">
-                <div className="w-4 h-4 rounded border-2 border-gray-200 flex-shrink-0" />
-                <span className="flex-1 text-sm">{t.title}</span>
-                {t.deadline && (
-                  <span className={`text-[10px] font-semibold ${new Date(t.deadline) < new Date() ? 'text-red-500' : 'text-gray-400'}`}>
-                    {t.deadline}
+            <div className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
+              {todos.slice(0, 6).map(t => (
+                <div key={t.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50">
+                  <div className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" />
+                  <span className="flex-1 text-xs">{t.title}</span>
+                  <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">
+                    {t.category}
                   </span>
-                )}
-                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                  style={{
-                    background: t.category === 'School' ? '#EEF1FF' : t.category === 'Content' ? '#F0FDF4' : t.category === 'Business' ? '#FFF7ED' : '#F6F5FA',
-                    color: t.category === 'School' ? '#5B7FFF' : t.category === 'Content' ? '#22C55E' : t.category === 'Business' ? '#F97316' : '#9090A8'
-                  }}>
-                  {t.category}
-                </span>
-              </div>
-            ))
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
 
+      {/* FINANCIAL — Full width */}
       <div className="card">
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <span className="text-xs font-bold text-teal-500 uppercase tracking-wide">💰 Financial — Recent</span>
