@@ -11,6 +11,8 @@ export default function Dashboard() {
   const [todaysTasks, setTodaysTasks] = useState<any[]>([])
   const [todaysErrands, setTodaysErrands] = useState<any[]>([])
   const [todaysEvents, setTodaysEvents] = useState<any[]>([])
+  const [calendarTasks, setCalendarTasks] = useState<any[]>([])
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([])
   const [habits, setHabits] = useState<any[]>([])
   const [habitLogs, setHabitLogs] = useState<any[]>([])
   const [importantEvents, setImportantEvents] = useState<any[]>([])
@@ -70,7 +72,9 @@ export default function Dashboard() {
       habitsRes,
       habitLogsRes,
       transRes,
-      catsRes
+      catsRes,
+      monthTasksRes,
+      monthEventsRes
     ] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', u.id).single(),
       
@@ -116,7 +120,26 @@ export default function Dashboard() {
       supabase.from('calendar_categories')
         .select('*')
         .eq('user_id', u.id)
-        .order('created_at')
+        .order('created_at'),
+
+      // Tasks scheduled anywhere in the displayed month (for calendar cells)
+      supabase.from('tasks')
+        .select('*')
+        .eq('user_id', u.id)
+        .gte('scheduled_date', format(startOfMonth(calMonth), 'yyyy-MM-dd'))
+        .lte('scheduled_date', format(endOfMonth(calMonth), 'yyyy-MM-dd'))
+        .neq('status', 'cancelled')
+        .neq('status', 'done'),
+
+      // Events anywhere in the displayed month (for calendar cells and Important)
+      supabase.from('events')
+        .select('*')
+        .eq('user_id', u.id)
+        .gte('date', format(startOfMonth(calMonth), 'yyyy-MM-dd'))
+        .lte('date', format(endOfMonth(calMonth), 'yyyy-MM-dd'))
+        .neq('status', 'cancelled')
+        .order('all_day', { ascending: false })
+        .order('start_time')
     ])
 
     if (profRes.data) setProfile(profRes.data)
@@ -129,6 +152,8 @@ export default function Dashboard() {
     setTodaysErrands(errands)
 
     if (eventsRes.data) setTodaysEvents(eventsRes.data)
+    if (monthTasksRes.data) setCalendarTasks(monthTasksRes.data)
+    if (monthEventsRes.data) setCalendarEvents(monthEventsRes.data)
     if (habitsRes.data) setHabits(habitsRes.data)
     if (habitLogsRes.data) setHabitLogs(habitLogsRes.data)
     if (transRes.data) setTransactions(transRes.data)
@@ -136,13 +161,8 @@ export default function Dashboard() {
     if (catsRes.data && catsRes.data.length > 0) {
       setCategories(catsRes.data)
       
-      // Get important events (this month)
-      const { data: monthEvents } = await supabase.from('events')
-        .select('*')
-        .eq('user_id', u.id)
-        .gte('date', format(startOfMonth(calMonth), 'yyyy-MM-dd'))
-        .lte('date', format(endOfMonth(calMonth), 'yyyy-MM-dd'))
-        .neq('status', 'cancelled')
+      // Get important events from the already loaded displayed month
+      const monthEvents = monthEventsRes.data || []
 
       const importantCatIds = catsRes.data
         .filter(c => c.is_important)
@@ -546,9 +566,9 @@ export default function Dashboard() {
               {Array.from({ length: blanks }).map((_, i) => <div key={`b${i}`} />)}
               {days.map(day => {
                 const dateStr = format(day, 'yyyy-MM-dd')
-                const dayTasks = todaysTasks.filter(t => t.scheduled_date === dateStr)
-                const dayErrands = todaysErrands.filter(e => e.scheduled_date === dateStr)
-                const dayEvents = todaysEvents.filter(e => e.date === dateStr)
+                const dayTasks = calendarTasks.filter(t => t.scheduled_date === dateStr && t.task_type === 'task')
+                const dayErrands = calendarTasks.filter(t => t.scheduled_date === dateStr && t.task_type === 'errand')
+                const dayEvents = calendarEvents.filter(e => e.date === dateStr)
                 const dayItems = [...dayTasks, ...dayErrands, ...dayEvents]
                 const isTod = isToday(day)
                 const isSel = selectedDate === dateStr
