@@ -80,6 +80,11 @@ export default function FinancialPlanner() {
   const [budgets, setBudgets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('dashboard')
+  const [tab, setTab] = useState('overview')
+  const [selectedMonth, setSelectedMonth] = useState(new Date())
+  const [fixedExpenses, setFixedExpenses] = useState<any[]>([])
+  const [goals, setGoals] = useState<any[]>([])
+  const [goalContributions, setGoalContributions] = useState<Record<string, string>>({})
   const [showBalances, setShowBalances] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -122,10 +127,14 @@ export default function FinancialPlanner() {
     monthly_limit: 0,
     currency: 'IDR'
   })
+  const [budgetForm, setBudgetForm] = useState({ category: '', monthly_limit: 0, currency: 'IDR' })
+  const [fixedForm, setFixedForm] = useState({ name: '', category: 'Tagihan', amount: 0, currency: 'IDR', due_day: 1 })
+  const [goalForm, setGoalForm] = useState({ name: '', target_amount: 0, currency: 'IDR', target_date: '' })
 
   useEffect(() => {
     load()
   }, [])
+  useEffect(() => { load() }, [selectedMonth])
 
   async function load() {
     try {
@@ -136,15 +145,21 @@ export default function FinancialPlanner() {
         setAccounts([])
         setTransactions([])
         setBudgets([])
+        setFixedExpenses([])
+        setGoals([])
         setToast('Silakan masuk untuk melihat data keuangan.')
         return false
       }
       setUser(u)
 
+      const budgetMonth = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1))
       const [
         { data: accts, error: accountsError },
         { data: txs, error: transactionsError },
         { data: bdgs, error: budgetsError }
+        { data: bdgs, error: budgetsError },
+        { data: fixedRows, error: fixedError },
+        { data: goalRows, error: goalsError }
       ] = await Promise.all([
         supabase.from('accounts')
           .select('*')
@@ -161,14 +176,21 @@ export default function FinancialPlanner() {
           .eq('user_id', u.id)
           .eq('budget_month', localDateString(new Date(new Date().getFullYear(), new Date().getMonth(), 1)))
           .is('deleted_at', null)
+          .eq('budget_month', budgetMonth)
+          .is('deleted_at', null),
+        supabase.from('financial_fixed_expenses').select('*').eq('user_id', u.id).eq('is_active', true).order('due_day'),
+        supabase.from('financial_goals').select('*').eq('user_id', u.id).eq('is_active', true).order('target_date')
       ])
 
       const queryError = accountsError || transactionsError || budgetsError
+      const queryError = accountsError || transactionsError || budgetsError || fixedError || goalsError
       if (queryError) throw queryError
 
       setAccounts(accts || [])
       setTransactions(txs || [])
       setBudgets(bdgs || [])
+      setFixedExpenses(fixedRows || [])
+      setGoals(goalRows || [])
       return true
     } catch (error: any) {
       setToast('Data gagal dimuat: ' + (error?.message || 'Periksa koneksi dan pengaturan database.'))
@@ -375,6 +397,7 @@ export default function FinancialPlanner() {
     try {
       const today = new Date()
       const thisMonth = localDateString(new Date(today.getFullYear(), today.getMonth(), 1))
+      const thisMonth = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1))
       const { error } = await supabase.from('budgets').insert({
         user_id: user.id,
         category: budgetForm.category.trim(),
@@ -393,6 +416,75 @@ export default function FinancialPlanner() {
     } finally {
       setSaving(false)
     }
+  }
+
+  async function addFixedExpense() {
+    if (!user) { setToast('Silakan masuk dulu.'); return }
+    const amount = Number(fixedForm.amount)
+    if (!fixedForm.name.trim() || !Number.isFinite(amount) || amount <= 0 || fixedForm.due_day < 1 || fixedForm.due_day > 31) {
+      setToast('Isi nama, jumlah positif, dan tanggal jatuh tempo 1–31.')
+      return
+    }
+    setSaving(true)
+    try {
+      const { error } = await supabase.from('financial_fixed_expenses').insert({
+        user_id: user.id, name: fixedForm.name.trim(), category: fixedForm.category.trim() || 'Tagihan',
+        amount, currency: fixedForm.currency, due_day: Number(fixedForm.due_day), is_active: true
+      })
+      if (error) throw error
+      setFixedForm({ name: '', category: 'Tagihan', amount: 0, currency: 'IDR', due_day: 1 })
+      const refreshed = await load()
+      setToast(refreshed ? 'Tagihan rutin berhasil disimpan.' : 'Tagihan terkirim, tetapi daftar gagal dimuat ulang.')
+    } catch (error: any) { setToast('Tagihan gagal disimpan: ' + (error?.message || 'Periksa database.')) }
+    finally { setSaving(false) }
+  }
+
+  async function archiveFixedExpense(id: string) {
+    if (!confirm('Arsipkan tagihan rutin ini?')) return
+    const { error } = await supabase.from('financial_fixed_expenses').update({ is_active: false }).eq('id', id).eq('user_id', user.id)
+    if (error) { setToast('Tagihan gagal diarsipkan: ' + error.message); return }
+    setToast('Tagihan rutin diarsipkan.')
+    load()
+  }
+
+  async function addGoal() {
+    if (!user) { setToast('Silakan masuk dulu.'); return }
+    const target = Number(goalForm.target_amount)
+    if (!goalForm.name.trim() || !Number.isFinite(target) || target <= 0) {
+      setToast('Isi nama tujuan dan target yang lebih besar dari nol.')
+      return
+    }
+    setSaving(true)
+    try {
+      const { error } = await supabase.from('financial_goals').insert({
+        user_id: user.id, name: goalForm.name.trim(), target_amount: target, current_amount: 0,
+        currency: goalForm.currency, target_date: goalForm.target_date || null, is_active: true
+      })
+      if (error) throw error
+      setGoalForm({ name: '', target_amount: 0, currency: 'IDR', target_date: '' })
+      const refreshed = await load()
+      setToast(refreshed ? 'Tujuan tabungan berhasil dibuat.' : 'Tujuan terkirim, tetapi daftar gagal dimuat ulang.')
+    } catch (error: any) { setToast('Tujuan gagal disimpan: ' + (error?.message || 'Periksa database.')) }
+    finally { setSaving(false) }
+  }
+
+  async function addGoalContribution(goal: any) {
+    const amount = Number(goalContributions[goal.id])
+    if (!Number.isFinite(amount) || amount <= 0) { setToast('Masukkan jumlah progres yang valid.'); return }
+    const nextAmount = Math.min(Number(goal.current_amount || 0) + amount, Number(goal.target_amount))
+    const { error } = await supabase.from('financial_goals').update({ current_amount: nextAmount }).eq('id', goal.id).eq('user_id', user.id)
+    if (error) { setToast('Progres gagal disimpan: ' + error.message); return }
+    setGoalContributions({ ...goalContributions, [goal.id]: '' })
+    setToast('Progres tujuan diperbarui.')
+    load()
+  }
+
+  async function archiveGoal(id: string) {
+    if (!confirm('Arsipkan tujuan tabungan ini?')) return
+    const { error } = await supabase.from('financial_goals').update({ is_active: false }).eq('id', id).eq('user_id', user.id)
+    if (error) { setToast('Tujuan gagal diarsipkan: ' + error.message); return }
+    setToast('Tujuan tabungan diarsipkan.')
+    load()
   }
 
   // Delete
@@ -549,6 +641,7 @@ export default function FinancialPlanner() {
   })
 
   const thisMonth = localDateString().slice(0, 7)
+  const thisMonth = localDateString(selectedMonth).slice(0, 7)
   const monthlyIncome: any = {}
   const monthlySpending: any = {}
   transactions.forEach(tx => {
@@ -578,10 +671,14 @@ export default function FinancialPlanner() {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">💰 Keuangan</h1>
+        <div><h1 className="text-2xl font-bold">Financial Planner 💰</h1><p className="text-sm text-gray-400 mt-1">Multi-account · Multi-currency · Integrated with Business</p></div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => receiptInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Camera size={16} /> Pilih Nota</button>
           <button onClick={() => csvInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Upload size={16} /> Impor CSV</button>
           <button onClick={() => { setTab('transactions'); setShowAddTx(true) }} className="btn-blue btn-sm flex items-center gap-1"><Plus size={16} /> Tambah Transaksi</button>
+          <button onClick={() => receiptInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Camera size={16} /> Scan Receipt</button>
+          <button onClick={() => csvInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Upload size={16} /> Import CSV</button>
+          <button onClick={() => { setTab('transactions'); setShowAddTx(true) }} className="btn-blue btn-sm flex items-center gap-1"><Plus size={16} /> Add Transaction</button>
           <button onClick={() => setShowBalances(!showBalances)} className="btn-gray btn-sm">
           {showBalances ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
@@ -601,6 +698,18 @@ export default function FinancialPlanner() {
         </div>
       </div>
 
+      <div className="flex items-center justify-between gap-2 mb-4 overflow-x-auto">
+        <div className="flex gap-2 min-w-max">
+          {Array.from({ length: 12 }, (_, month) => (
+            <button key={month} onClick={() => setSelectedMonth(new Date(selectedMonth.getFullYear(), month, 1))}
+              className={`rounded-full px-4 py-2 text-sm font-semibold ${selectedMonth.getMonth() === month ? 'bg-teal-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-100'}`}>
+              {new Intl.DateTimeFormat('en-US', { month: 'short' }).format(new Date(selectedMonth.getFullYear(), month, 1))}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-gray-400">{selectedMonth.getFullYear()}</span>
+      </div>
+
       {/* Toast */}
       {toast && (
         <div className={`mb-4 p-3 rounded-lg text-sm flex items-center justify-between ${toast.toLowerCase().includes('gagal') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
@@ -612,23 +721,37 @@ export default function FinancialPlanner() {
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-gray-200">
         {['dashboard', 'accounts', 'transactions', 'budgets'].map(t => (
+      <div className="flex gap-2 mb-6 rounded-2xl bg-white p-2 overflow-x-auto">
+        {['overview', 'accounts', 'transactions', 'budgets', 'rmb', 'ccm', 'fixed', 'goals', 'reports'].map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-semibold border-b-2 transition ${
               tab === t ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-900'
+            className={`px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${
+              tab === t ? 'bg-teal-500 text-white' : 'text-gray-500 hover:bg-gray-100'
             }`}
           >
             {t === 'dashboard' && '📊 Ringkasan'}
             {t === 'accounts' && '🏦 Akun'}
             {t === 'transactions' && '📝 Transaksi'}
             {t === 'budgets' && '💳 Budget'}
+            {t === 'overview' && '📊 Overview'}
+            {t === 'accounts' && '💳 Accounts'}
+            {t === 'transactions' && '📋 Transactions'}
+            {t === 'budgets' && '🎯 Budget'}
+            {t === 'rmb' && '🇨🇳 RMB'}
+            {t === 'ccm' && '💳 CCM Manager'}
+            {t === 'fixed' && '🔁 Fixed'}
+            {t === 'goals' && '🌟 Goals'}
+            {t === 'reports' && '📈 Reports'}
           </button>
         ))}
       </div>
 
       {/* DASHBOARD TAB */}
       {tab === 'dashboard' && (
+      {tab === 'overview' && (
         <div className="space-y-6">
           {/* Balances */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -971,6 +1094,101 @@ export default function FinancialPlanner() {
           </div>
         </div>
       )}
+
+
+      {tab === 'rmb' && (
+        <div className="space-y-4">
+          <div className="card p-5"><h2 className="font-bold text-lg">RMB / Yuan</h2><p className="text-sm text-gray-500">Akun dan transaksi CNY saja. Nilai tidak dikonversi ke IDR.</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+              <div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Saldo tersedia</div><b className="text-xl">{formatMoney(balances.find(item => item.currency === 'CNY')?.available || 0, 'CNY')}</b></div>
+              <div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Pemasukan bulan ini</div><b className="text-xl text-green-600">{formatMoney(monthlyIncome.CNY || 0, 'CNY')}</b></div>
+              <div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Pengeluaran bulan ini</div><b className="text-xl text-red-500">{formatMoney(monthlySpending.CNY || 0, 'CNY')}</b></div>
+            </div>
+          </div>
+          <div className="card p-4"><h3 className="font-bold mb-3">Akun RMB</h3>
+            {accounts.filter(item => item.currency === 'CNY').length === 0 ? <p className="text-sm text-gray-500">Belum ada akun CNY. Tambahkan akun bermata uang CNY di Accounts.</p> : accounts.filter(item => item.currency === 'CNY').map(item => <div key={item.id} className="flex justify-between border-b py-3 text-sm"><span>{item.name}</span><b>{formatMoney(balanceById.get(item.id) || 0, 'CNY')}</b></div>)}
+          </div>
+          <div className="card p-4"><h3 className="font-bold mb-3">Transaksi RMB</h3>
+            {transactions.filter(tx => tx.currency === 'CNY').slice(0, 20).map(tx => <div key={tx.id} className="flex justify-between border-b py-3 text-sm"><span>{tx.transaction_date} · {tx.merchant || tx.category}</span><b>{transactionLabel(tx.type)} · {formatMoney(tx.amount, 'CNY')}</b></div>)}
+            {transactions.filter(tx => tx.currency === 'CNY').length === 0 && <p className="text-sm text-gray-500">Belum ada transaksi RMB.</p>}
+          </div>
+        </div>
+      )}
+
+      {tab === 'ccm' && (
+        <div className="space-y-4">
+          <div className="card p-5"><h2 className="font-bold text-lg">Credit Card Manager</h2><p className="text-sm text-gray-500">Pantau tagihan, limit, tanggal cetak tagihan, dan jatuh tempo kartu.</p></div>
+          {accounts.filter(item => item.type === 'credit_card').map(card => {
+            const debt = Math.max(0, balanceById.get(card.id) || 0)
+            const limit = Number(card.credit_limit || 0)
+            const used = limit > 0 ? Math.min(debt / limit * 100, 100) : 0
+            return <div key={card.id} className="card p-5"><div className="flex justify-between gap-3"><div><h3 className="font-bold">{card.name}</h3><p className="text-xs text-gray-500">{card.bank_name || 'Kartu kredit'}{card.account_number_last4 ? ' · •••• ' + card.account_number_last4 : ''}</p></div><div className="text-right"><div className="text-xs text-gray-500">Tagihan saat ini</div><b className="text-red-600">{formatMoney(debt, card.currency)}</b></div></div>
+              <div className="mt-4"><div className="flex justify-between text-xs text-gray-500"><span>Limit: {formatMoney(limit, card.currency)}</span><span>{limit > 0 ? `${used.toFixed(0)}% terpakai` : 'Limit belum diisi'}</span></div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className={`h-2 rounded-full ${used >= 90 ? 'bg-red-500' : 'bg-teal-500'}`} style={{ width: `${used}%` }} /></div></div>
+              <div className="grid grid-cols-2 gap-3 mt-4 text-sm"><div><div className="text-xs text-gray-400">Tanggal cetak</div><b>{card.billing_cycle_day || 'Belum diatur'}</b></div><div><div className="text-xs text-gray-400">Jatuh tempo</div><b>{card.payment_due_day || 'Belum diatur'}</b></div></div>
+              <button onClick={() => { setTab('transactions'); setTxForm({ ...txForm, type: 'transfer', currency: card.currency, to_account_id: card.id, from_account_id: '' }) }} className="btn-gray btn-sm mt-4">Catat pembayaran kartu</button>
+            </div>
+          })}
+          {accounts.filter(item => item.type === 'credit_card').length === 0 && <div className="card p-6 text-sm text-gray-500">Belum ada kartu kredit. Tambahkan akun bertipe kartu kredit di Accounts.</div>}
+        </div>
+      )}
+
+      {tab === 'fixed' && (
+        <div className="space-y-4">
+          <div className="card p-5"><h2 className="font-bold text-lg">Fixed Expenses</h2><p className="text-sm text-gray-500">Daftar tagihan rutin dan tanggal jatuh tempo. Ini pengingat; transaksi tetap dicatat saat dibayar.</p></div>
+          <div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <input className="inp text-sm" placeholder="Nama tagihan" value={fixedForm.name} onChange={e => setFixedForm({ ...fixedForm, name: e.target.value })} />
+            <input className="inp text-sm" placeholder="Kategori" value={fixedForm.category} onChange={e => setFixedForm({ ...fixedForm, category: e.target.value })} />
+            <input className="inp text-sm" type="number" min="1" placeholder="Jumlah" value={fixedForm.amount || ''} onChange={e => setFixedForm({ ...fixedForm, amount: Number(e.target.value) })} />
+            <select className="sel text-sm" value={fixedForm.currency} onChange={e => setFixedForm({ ...fixedForm, currency: e.target.value })}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select>
+            <div className="flex gap-2"><input className="inp text-sm w-20" type="number" min="1" max="31" aria-label="Tanggal jatuh tempo" value={fixedForm.due_day} onChange={e => setFixedForm({ ...fixedForm, due_day: Number(e.target.value) })} /><button onClick={addFixedExpense} disabled={saving} className="btn-blue btn-sm">Tambah</button></div>
+          </div><p className="text-xs text-gray-400 mt-2">Angka terakhir adalah tanggal jatuh tempo (1–31).</p></div>
+          <div className="space-y-2">{fixedExpenses.map(item => <div key={item.id} className="card p-4 flex items-center justify-between"><div><b>{item.name}</b><div className="text-xs text-gray-500">{item.category} · jatuh tempo tanggal {item.due_day}</div></div><div className="flex items-center gap-3"><b>{formatMoney(item.amount, item.currency)}</b><button onClick={() => archiveFixedExpense(item.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button></div></div>)}{fixedExpenses.length === 0 && <div className="card p-5 text-sm text-gray-500">Belum ada tagihan rutin.</div>}</div>
+        </div>
+      )}
+
+      {tab === 'goals' && (
+        <div className="space-y-4">
+          <div className="card p-5"><h2 className="font-bold text-lg">Savings Goals</h2><p className="text-sm text-gray-500">Lacak target dan progres tabungan. Progres di sini tidak otomatis memindahkan saldo rekening.</p></div>
+          <div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <input className="inp text-sm" placeholder="Nama tujuan" value={goalForm.name} onChange={e => setGoalForm({ ...goalForm, name: e.target.value })} />
+            <input className="inp text-sm" type="number" min="1" placeholder="Target" value={goalForm.target_amount || ''} onChange={e => setGoalForm({ ...goalForm, target_amount: Number(e.target.value) })} />
+            <select className="sel text-sm" value={goalForm.currency} onChange={e => setGoalForm({ ...goalForm, currency: e.target.value })}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select>
+            <input className="sel text-sm" type="date" aria-label="Tanggal target" value={goalForm.target_date} onChange={e => setGoalForm({ ...goalForm, target_date: e.target.value })} />
+            <button onClick={addGoal} disabled={saving} className="btn-blue btn-sm">Buat tujuan</button>
+          </div></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{goals.map(goal => { const current = Number(goal.current_amount || 0); const target = Number(goal.target_amount || 0); const percent = target > 0 ? Math.min(current / target * 100, 100) : 0; return <div key={goal.id} className="card p-4"><div className="flex justify-between"><div><b>{goal.name}</b><div className="text-xs text-gray-500">{goal.target_date ? `Target ${goal.target_date}` : 'Tanpa tanggal target'}</div></div><button onClick={() => archiveGoal(goal.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button></div><div className="mt-3 flex justify-between text-sm"><span>{formatMoney(current, goal.currency)}</span><b>{formatMoney(target, goal.currency)}</b></div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className="h-2 bg-teal-500 rounded-full" style={{ width: `${percent}%` }} /></div><div className="text-xs text-gray-500 mt-1">{percent.toFixed(0)}% tercapai</div>{percent < 100 && <div className="flex gap-2 mt-3"><input className="inp text-sm" type="number" min="1" placeholder="Tambah progres" value={goalContributions[goal.id] || ''} onChange={e => setGoalContributions({ ...goalContributions, [goal.id]: e.target.value })} /><button onClick={() => addGoalContribution(goal)} className="btn-gray btn-sm">Simpan</button></div>}</div> })}{goals.length === 0 && <div className="card p-5 text-sm text-gray-500">Belum ada tujuan tabungan.</div>}</div>
+        </div>
+      )}
+
+      {tab === 'reports' && (
+        <div className="space-y-4">
+          <div className="card p-5"><h2 className="font-bold text-lg">Laporan Bulanan</h2><p className="text-sm text-gray-500">Ringkasan pemasukan dan pengeluaran untuk bulan yang dipilih di atas.</p></div>
+          {summaryCurrencies.map(currency => {
+            const periodRows = transactions.filter(tx => tx.currency === currency && tx.transaction_date?.startsWith(thisMonth))
+            const income = periodRows.filter(tx => tx.type === 'income').reduce((sum, tx) => sum + Number(tx.amount), 0)
+            const expenses = periodRows.filter(tx => ['expense', 'fee', 'credit_card_purchase'].includes(tx.type)).reduce((sum, tx) => sum + Number(tx.amount), 0)
+            const categories = new Map<string, number>()
+            periodRows.filter(tx => ['expense', 'fee', 'credit_card_purchase'].includes(tx.type)).forEach(tx => categories.set(tx.category || 'Lainnya', (categories.get(tx.category || 'Lainnya') || 0) + Number(tx.amount)))
+            return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Pemasukan</div><b className="text-green-600">{formatMoney(income, currency)}</b></div><div><div className="text-gray-400 text-xs">Pengeluaran</div><b className="text-red-500">{formatMoney(expenses, currency)}</b></div><div><div className="text-gray-400 text-xs">Selisih</div><b>{formatMoney(income - expenses, currency)}</b></div></div><h4 className="font-semibold text-sm">Pengeluaran per kategori</h4>{Array.from(categories.entries()).map(([category, amount]) => <div key={category} className="flex justify-between border-b py-2 text-sm"><span>{category}</span><span>{formatMoney(amount, currency)}</span></div>)}{categories.size === 0 && <p className="text-sm text-gray-500 mt-2">Belum ada pengeluaran bulan ini.</p>}</div>
+          })}
+          {summaryCurrencies.length === 0 && <div className="card p-5 text-sm text-gray-500">Belum ada data untuk laporan.</div>}
+        </div>
+      )}
+
+
+      {tab === 'rmb' && <div className="space-y-4">
+        <div className="card p-5"><h2 className="font-bold text-lg">RMB / Yuan</h2><p className="text-sm text-gray-500">Akun dan transaksi CNY saja. Nilai tidak dikonversi ke IDR.</p><div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4"><div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Saldo tersedia</div><b className="text-xl">{formatMoney(balances.find(item => item.currency === 'CNY')?.available || 0, 'CNY')}</b></div><div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Pemasukan bulan ini</div><b className="text-xl text-green-600">{formatMoney(monthlyIncome.CNY || 0, 'CNY')}</b></div><div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Pengeluaran bulan ini</div><b className="text-xl text-red-500">{formatMoney(monthlySpending.CNY || 0, 'CNY')}</b></div></div></div>
+        <div className="card p-4"><h3 className="font-bold mb-3">Akun RMB</h3>{accounts.filter(item => item.currency === 'CNY').length === 0 ? <p className="text-sm text-gray-500">Belum ada akun CNY. Tambahkan akun bermata uang CNY di Accounts.</p> : accounts.filter(item => item.currency === 'CNY').map(item => <div key={item.id} className="flex justify-between border-b py-3 text-sm"><span>{item.name}</span><b>{formatMoney(balanceById.get(item.id) || 0, 'CNY')}</b></div>)}</div>
+        <div className="card p-4"><h3 className="font-bold mb-3">Transaksi RMB</h3>{transactions.filter(tx => tx.currency === 'CNY').slice(0,20).map(tx => <div key={tx.id} className="flex justify-between border-b py-3 text-sm"><span>{tx.transaction_date} · {tx.merchant || tx.category}</span><b>{transactionLabel(tx.type)} · {formatMoney(tx.amount,'CNY')}</b></div>)}{transactions.filter(tx => tx.currency === 'CNY').length === 0 && <p className="text-sm text-gray-500">Belum ada transaksi RMB.</p>}</div>
+      </div>}
+
+      {tab === 'ccm' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Credit Card Manager</h2><p className="text-sm text-gray-500">Pantau tagihan, limit, tanggal cetak tagihan, dan jatuh tempo kartu.</p></div>{accounts.filter(item => item.type === 'credit_card').map(card => { const debt=Math.max(0,balanceById.get(card.id)||0); const limit=Number(card.credit_limit||0); const used=limit>0?Math.min(debt/limit*100,100):0; return <div key={card.id} className="card p-5"><div className="flex justify-between"><div><h3 className="font-bold">{card.name}</h3><p className="text-xs text-gray-500">{card.bank_name||'Kartu kredit'}{card.account_number_last4?' · •••• '+card.account_number_last4:''}</p></div><b className="text-red-600">{formatMoney(debt,card.currency)}</b></div><div className="mt-4 text-xs text-gray-500">Limit {formatMoney(limit,card.currency)} · {used.toFixed(0)}% terpakai</div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className={`h-2 rounded-full ${used>=90?'bg-red-500':'bg-teal-500'}`} style={{width:`${used}%`}}/></div><div className="grid grid-cols-2 gap-3 mt-4 text-sm"><div>Tanggal tagihan: <b>{card.billing_cycle_day||'Belum diatur'}</b></div><div>Jatuh tempo: <b>{card.payment_due_day||'Belum diatur'}</b></div></div><button onClick={()=>{setTab('transactions');setTxForm({...txForm,type:'transfer',currency:card.currency,to_account_id:card.id,from_account_id:''})}} className="btn-gray btn-sm mt-4">Catat pembayaran kartu</button></div>})}{accounts.filter(item=>item.type==='credit_card').length===0&&<div className="card p-6 text-sm text-gray-500">Belum ada kartu kredit. Tambahkan di Accounts.</div>}</div>}
+
+      {tab === 'fixed' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Fixed Expenses</h2><p className="text-sm text-gray-500">Tagihan rutin dan tanggal jatuh tempo. Ini pengingat; transaksi tetap dicatat saat dibayar.</p></div><div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2"><input className="inp text-sm" placeholder="Nama tagihan" value={fixedForm.name} onChange={e=>setFixedForm({...fixedForm,name:e.target.value})}/><input className="inp text-sm" placeholder="Kategori" value={fixedForm.category} onChange={e=>setFixedForm({...fixedForm,category:e.target.value})}/><input className="inp text-sm" type="number" min="1" placeholder="Jumlah" value={fixedForm.amount||''} onChange={e=>setFixedForm({...fixedForm,amount:Number(e.target.value)})}/><select className="sel text-sm" value={fixedForm.currency} onChange={e=>setFixedForm({...fixedForm,currency:e.target.value})}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select><div className="flex gap-2"><input className="inp text-sm w-20" type="number" min="1" max="31" aria-label="Tanggal jatuh tempo" value={fixedForm.due_day} onChange={e=>setFixedForm({...fixedForm,due_day:Number(e.target.value)})}/><button onClick={addFixedExpense} disabled={saving} className="btn-blue btn-sm">Tambah</button></div></div><p className="text-xs text-gray-400 mt-2">Angka terakhir adalah tanggal jatuh tempo (1–31).</p></div><div className="space-y-2">{fixedExpenses.map(item=><div key={item.id} className="card p-4 flex justify-between"><div><b>{item.name}</b><div className="text-xs text-gray-500">{item.category} · jatuh tempo tanggal {item.due_day}</div></div><div className="flex gap-3"><b>{formatMoney(item.amount,item.currency)}</b><button onClick={()=>archiveFixedExpense(item.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16}/></button></div></div>)}{fixedExpenses.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada tagihan rutin.</div>}</div></div>}
+
+      {tab === 'goals' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Savings Goals</h2><p className="text-sm text-gray-500">Lacak target tabungan. Progres di sini tidak otomatis memindahkan saldo rekening.</p></div><div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2"><input className="inp text-sm" placeholder="Nama tujuan" value={goalForm.name} onChange={e=>setGoalForm({...goalForm,name:e.target.value})}/><input className="inp text-sm" type="number" min="1" placeholder="Target" value={goalForm.target_amount||''} onChange={e=>setGoalForm({...goalForm,target_amount:Number(e.target.value)})}/><select className="sel text-sm" value={goalForm.currency} onChange={e=>setGoalForm({...goalForm,currency:e.target.value})}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select><input className="sel text-sm" type="date" aria-label="Tanggal target" value={goalForm.target_date} onChange={e=>setGoalForm({...goalForm,target_date:e.target.value})}/><button onClick={addGoal} disabled={saving} className="btn-blue btn-sm">Buat tujuan</button></div></div><div className="grid grid-cols-1 md:grid-cols-2 gap-3">{goals.map(goal=>{const current=Number(goal.current_amount||0);const target=Number(goal.target_amount||0);const percent=target>0?Math.min(current/target*100,100):0;return <div key={goal.id} className="card p-4"><div className="flex justify-between"><div><b>{goal.name}</b><div className="text-xs text-gray-500">{goal.target_date||'Tanpa tanggal target'}</div></div><button onClick={()=>archiveGoal(goal.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16}/></button></div><div className="mt-3 flex justify-between text-sm"><span>{formatMoney(current,goal.currency)}</span><b>{formatMoney(target,goal.currency)}</b></div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className="h-2 bg-teal-500 rounded-full" style={{width:`${percent}%`}}/></div><div className="text-xs text-gray-500 mt-1">{percent.toFixed(0)}% tercapai</div>{percent<100&&<div className="flex gap-2 mt-3"><input className="inp text-sm" type="number" min="1" placeholder="Tambah progres" value={goalContributions[goal.id]||''} onChange={e=>setGoalContributions({...goalContributions,[goal.id]:e.target.value})}/><button onClick={()=>addGoalContribution(goal)} className="btn-gray btn-sm">Simpan</button></div>}</div>})}{goals.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada tujuan tabungan.</div>}</div></div>}
+
+      {tab === 'reports' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Laporan Bulanan</h2><p className="text-sm text-gray-500">Ringkasan untuk bulan yang dipilih di bagian atas.</p></div>{summaryCurrencies.map(currency=>{const rows=transactions.filter(tx=>tx.currency===currency&&tx.transaction_date?.startsWith(thisMonth));const income=rows.filter(tx=>tx.type==='income').reduce((sum,tx)=>sum+Number(tx.amount),0);const expenses=rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).reduce((sum,tx)=>sum+Number(tx.amount),0);const cats=new Map();rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).forEach(tx=>cats.set(tx.category||'Lainnya',(cats.get(tx.category||'Lainnya')||0)+Number(tx.amount)));return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Pemasukan</div><b className="text-green-600">{formatMoney(income,currency)}</b></div><div><div className="text-gray-400 text-xs">Pengeluaran</div><b className="text-red-500">{formatMoney(expenses,currency)}</b></div><div><div className="text-gray-400 text-xs">Selisih</div><b>{formatMoney(income-expenses,currency)}</b></div></div><h4 className="font-semibold text-sm">Pengeluaran per kategori</h4>{Array.from(cats.entries()).map(([category,amount])=><div key={String(category)} className="flex justify-between border-b py-2 text-sm"><span>{String(category)}</span><span>{formatMoney(Number(amount),currency)}</span></div>)}{cats.size===0&&<p className="text-sm text-gray-500 mt-2">Belum ada pengeluaran bulan ini.</p>}</div>})}{summaryCurrencies.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada data untuk laporan.</div>}</div>}
     </div>
   )
 }
