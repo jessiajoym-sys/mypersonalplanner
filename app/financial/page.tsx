@@ -121,7 +121,8 @@ function parseStatementCandidates(text: string, kind: PdfStatementKind, year: nu
 
   const moneyPattern = /\b(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+[.,]\d{1,2})\b/gi
   const drafts: StatementDraft[] = []
-  for (const [index, record] of records.entries()) {
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index]
     const dateToken = record.first.match(starts)?.[0] || ''
     const date = statementDate(dateToken, year)
     const amounts = Array.from(record.first.matchAll(moneyPattern)).map(m => parseMoneyInput(m[0])).filter(value => Number.isFinite(value) && value > 0)
