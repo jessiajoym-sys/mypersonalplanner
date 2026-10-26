@@ -275,7 +275,10 @@ export default function FinancialPlanner() {
     try {
       // PDF bytes and password are processed in this browser; neither is uploaded to Supabase.
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url).toString()
+      // Load the matching worker as a module from the package CDN. Bundling the
+      // PDF.js v6 worker through Next 14's webpack pipeline causes Terser to
+      // parse its import.meta module code as a classic script and fail builds.
+      pdfjs.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@6.4.299/legacy/build/pdf.worker.min.mjs'
       const bytes = new Uint8Array(await statementFile.arrayBuffer())
       const document = await pdfjs.getDocument({ data: bytes, password: statementPassword || undefined }).promise
       setStatementPassword('')
