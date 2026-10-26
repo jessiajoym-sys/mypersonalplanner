@@ -719,7 +719,7 @@ export default function Dashboard() {
             </div>
           )}
           <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
-            <button onClick={() => setTaskForm({ ...taskForm, task_type: 'errand' }); setShowAddTask(true)}
+            <button onClick={() => { setTaskForm({ ...taskForm, task_type: 'errand' }); setShowAddTask(true) }}
               className="flex items-center gap-1.5 text-xs text-amber-600 font-semibold hover:underline w-full justify-center">
               <Plus size={13} /> Add errand
             </button>
