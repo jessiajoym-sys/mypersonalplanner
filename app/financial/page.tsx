@@ -79,7 +79,6 @@ export default function FinancialPlanner() {
   const [transactions, setTransactions] = useState<any[]>([])
   const [budgets, setBudgets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('dashboard')
   const [tab, setTab] = useState('overview')
   const [selectedMonth, setSelectedMonth] = useState(new Date())
   const [fixedExpenses, setFixedExpenses] = useState<any[]>([])
@@ -122,18 +121,10 @@ export default function FinancialPlanner() {
 
   // Budget Form
   const [showAddBudget, setShowAddBudget] = useState(false)
-  const [budgetForm, setBudgetForm] = useState({
-    category: '',
-    monthly_limit: 0,
-    currency: 'IDR'
-  })
   const [budgetForm, setBudgetForm] = useState({ category: '', monthly_limit: 0, currency: 'IDR' })
   const [fixedForm, setFixedForm] = useState({ name: '', category: 'Tagihan', amount: 0, currency: 'IDR', due_day: 1 })
   const [goalForm, setGoalForm] = useState({ name: '', target_amount: 0, currency: 'IDR', target_date: '' })
 
-  useEffect(() => {
-    load()
-  }, [])
   useEffect(() => { load() }, [selectedMonth])
 
   async function load() {
@@ -156,7 +147,6 @@ export default function FinancialPlanner() {
       const [
         { data: accts, error: accountsError },
         { data: txs, error: transactionsError },
-        { data: bdgs, error: budgetsError }
         { data: bdgs, error: budgetsError },
         { data: fixedRows, error: fixedError },
         { data: goalRows, error: goalsError }
@@ -174,15 +164,12 @@ export default function FinancialPlanner() {
         supabase.from('budgets')
           .select('*')
           .eq('user_id', u.id)
-          .eq('budget_month', localDateString(new Date(new Date().getFullYear(), new Date().getMonth(), 1)))
-          .is('deleted_at', null)
           .eq('budget_month', budgetMonth)
           .is('deleted_at', null),
         supabase.from('financial_fixed_expenses').select('*').eq('user_id', u.id).eq('is_active', true).order('due_day'),
         supabase.from('financial_goals').select('*').eq('user_id', u.id).eq('is_active', true).order('target_date')
       ])
 
-      const queryError = accountsError || transactionsError || budgetsError
       const queryError = accountsError || transactionsError || budgetsError || fixedError || goalsError
       if (queryError) throw queryError
 
@@ -395,8 +382,6 @@ export default function FinancialPlanner() {
 
     setSaving(true)
     try {
-      const today = new Date()
-      const thisMonth = localDateString(new Date(today.getFullYear(), today.getMonth(), 1))
       const thisMonth = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1))
       const { error } = await supabase.from('budgets').insert({
         user_id: user.id,
@@ -640,7 +625,6 @@ export default function FinancialPlanner() {
     }
   })
 
-  const thisMonth = localDateString().slice(0, 7)
   const thisMonth = localDateString(selectedMonth).slice(0, 7)
   const monthlyIncome: any = {}
   const monthlySpending: any = {}
@@ -670,12 +654,8 @@ export default function FinancialPlanner() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">💰 Keuangan</h1>
         <div><h1 className="text-2xl font-bold">Financial Planner 💰</h1><p className="text-sm text-gray-400 mt-1">Multi-account · Multi-currency · Integrated with Business</p></div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={() => receiptInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Camera size={16} /> Pilih Nota</button>
-          <button onClick={() => csvInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Upload size={16} /> Impor CSV</button>
-          <button onClick={() => { setTab('transactions'); setShowAddTx(true) }} className="btn-blue btn-sm flex items-center gap-1"><Plus size={16} /> Tambah Transaksi</button>
           <button onClick={() => receiptInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Camera size={16} /> Scan Receipt</button>
           <button onClick={() => csvInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1"><Upload size={16} /> Import CSV</button>
           <button onClick={() => { setTab('transactions'); setShowAddTx(true) }} className="btn-blue btn-sm flex items-center gap-1"><Plus size={16} /> Add Transaction</button>
@@ -719,23 +699,15 @@ export default function FinancialPlanner() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6 border-b border-gray-200">
-        {['dashboard', 'accounts', 'transactions', 'budgets'].map(t => (
       <div className="flex gap-2 mb-6 rounded-2xl bg-white p-2 overflow-x-auto">
         {['overview', 'accounts', 'transactions', 'budgets', 'rmb', 'ccm', 'fixed', 'goals', 'reports'].map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-semibold border-b-2 transition ${
-              tab === t ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-900'
             className={`px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${
               tab === t ? 'bg-teal-500 text-white' : 'text-gray-500 hover:bg-gray-100'
             }`}
           >
-            {t === 'dashboard' && '📊 Ringkasan'}
-            {t === 'accounts' && '🏦 Akun'}
-            {t === 'transactions' && '📝 Transaksi'}
-            {t === 'budgets' && '💳 Budget'}
             {t === 'overview' && '📊 Overview'}
             {t === 'accounts' && '💳 Accounts'}
             {t === 'transactions' && '📋 Transactions'}
@@ -750,7 +722,6 @@ export default function FinancialPlanner() {
       </div>
 
       {/* DASHBOARD TAB */}
-      {tab === 'dashboard' && (
       {tab === 'overview' && (
         <div className="space-y-6">
           {/* Balances */}
