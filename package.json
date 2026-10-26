@@ -15,7 +15,8 @@
     "@supabase/supabase-js": "^2.43.1",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.383.0",
-    "clsx": "^2.1.1"
+    "clsx": "^2.1.1",
+    "pdfjs-dist": "6.4.299"
   },
   "devDependencies": {
     "typescript": "^5",
