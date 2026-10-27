@@ -32,6 +32,20 @@ function transactionLabel(type: string) {
   return 'Pengeluaran'
 }
 
+function transactionBalanceDelta(accountId: string, accountType: string, tx: any) {
+  const amount = Number(tx.amount || 0)
+  if (tx.type === 'income' && tx.from_account_id === accountId) return accountType === 'credit_card' ? -amount : amount
+  if (tx.type === 'transfer') {
+    if (tx.from_account_id === accountId) return -amount
+    if (tx.to_account_id === accountId) return accountType === 'credit_card' ? -amount : amount
+  }
+  if (tx.from_account_id !== accountId) return 0
+  if (tx.type === 'credit_card_purchase') return amount
+  if (tx.type === 'expense') return -amount
+  if (tx.type === 'fee') return accountType === 'credit_card' ? amount : -amount
+  return 0
+}
+
 function parseMoneyInput(value: string) {
   let raw = value.trim().replace(/[^0-9,.-]/g, '')
   if (raw.includes(',') && raw.includes('.')) {
@@ -84,11 +98,14 @@ function parseStatementSummary(text: string): StatementSummary {
     const match = flat.match(new RegExp(label + String.raw`\s*:?\s*([0-9][0-9.,]*)`, 'i'))
     return match ? parseMoneyInput(match[1]) : null
   }
+  const finalTotalMatches = Array.from(flat.matchAll(/\bTOTAL\s+([0-9][0-9.,]*)/gi))
+  const bcaFinalTotal = finalTotalMatches.length ? parseMoneyInput(finalTotalMatches[finalTotalMatches.length - 1][1]) : null
   const dueMatch = flat.match(/TANGGAL JATUH TEMPO\s*:?\s*(\d{1,2})[-/](\d{1,2})[-/](\d{4})/i)
   const dueDate = dueMatch ? `${dueMatch[3]}-${String(Number(dueMatch[2])).padStart(2,'0')}-${String(Number(dueMatch[1])).padStart(2,'0')}` : null
   return {
     opening: amount('SALDO AWAL'), credits: amount('MUTASI CR'), debits: amount('MUTASI DB'), closing: amount('SALDO AKHIR'),
-    previousBill: amount('TAGIHAN BULAN LALU'), currentBill: amount('TAGIHAN BULAN INI'),
+    previousBill: amount('TAGIHAN BULAN LALU') ?? amount('SALDO SEBELUMNYA'),
+    currentBill: amount('TAGIHAN BULAN INI') ?? bcaFinalTotal,
     minimumPayment: amount('PEMBAYARAN MINIMUM'), dueDate, creditLimit: amount('BATAS KREDIT')
   }
 }
@@ -137,10 +154,11 @@ function parseStatementCandidates(text: string, kind: PdfStatementKind, year: nu
       .replace(/\s+/g, ' ').trim()
     const isPayment = /\b(pembayaran|payment|bayar tagihan)\b/i.test(raw)
     const isFee = /\b(biaya|admin|bunga|fee|interest)\b/i.test(raw)
+    const isCredit = /\bCR\s*$/i.test(record.first)
     const type = kind === 'credit_card'
-      ? (isPayment ? 'skip' : isFee ? 'fee' : 'credit_card_purchase')
-      : (/\b(CR|CREDIT)\b/i.test(record.first) ? 'income' : 'expense')
-    drafts.push({ id: String(index), date, merchant: merchant || raw || 'Transaksi dari statement', amount, type, category: isFee ? 'Biaya kartu' : 'Lainnya', include: type !== 'skip', raw })
+      ? (isPayment ? 'skip' : isFee ? 'fee' : isCredit ? 'income' : 'credit_card_purchase')
+      : (isPayment ? 'skip' : (/\b(CR|CREDIT)\b/i.test(record.first) ? 'income' : 'expense'))
+    drafts.push({ id: String(index), date, merchant: merchant || raw || 'Transaksi dari statement', amount, type, category: isFee ? 'Biaya kartu' : isCredit ? 'Pengembalian dana' : 'Lainnya', include: type !== 'skip', raw })
   }
   return drafts
 }
@@ -276,10 +294,6 @@ export default function FinancialPlanner() {
     try {
       // PDF bytes and password are processed in this browser; neither is uploaded to Supabase.
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      // Load the matching worker as a module from the package CDN. Bundling the
-      // PDF.js v6 worker through Next 14's webpack pipeline causes Terser to
-      // parse its import.meta module code as a classic script and fail builds.
-      pdfjs.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@6.4.299/legacy/build/pdf.worker.min.mjs'
       // Serve the matching worker from this app's own origin. package.json's
       // predev/prebuild scripts copy it from pdfjs-dist into /public.
       pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
@@ -355,21 +369,34 @@ export default function FinancialPlanner() {
     const uniqueRows = rows.filter(row => !signatures.has([row.transaction_date, row.from_account_id, row.type, Number(row.amount), String(row.merchant || '').trim().toLowerCase()].join('|')))
     if (!uniqueRows.length) { setToast('Transaksi ini tampaknya sudah pernah diimpor. Tidak ada duplikat yang disimpan.'); return }
     const skipped = rows.length - uniqueRows.length
-    if (!window.confirm('Simpan ' + uniqueRows.length + ' transaksi?' + (skipped ? ' ' + skipped + ' duplikat dilewati.' : '') + ' Pastikan tanggal, jenis, dan nominal sudah benar.')) return
+    const snapshotBalance = statementKind === 'credit_card' ? statementSummary?.currentBill : statementSummary?.closing
+    const snapshotNote = snapshotBalance === null || snapshotBalance === undefined
+      ? ' Saldo akhir tidak terbaca dari PDF; saldo akun tidak akan dicocokkan otomatis.'
+      : ' Saldo akhir PDF ' + formatMoney(snapshotBalance, account.currency) + ' akan dicocokkan otomatis.'
+    if (!window.confirm('Simpan ' + uniqueRows.length + ' transaksi?' + (skipped ? ' ' + skipped + ' duplikat dilewati.' : '') + ' Pastikan tanggal, jenis, dan nominal sudah benar.' + snapshotNote)) return
     setSaving(true)
     try {
       const { error } = await supabase.from('transactions').insert(uniqueRows)
       if (error) throw error
-      if (statementKind === 'credit_card' && statementSummary) {
-        const summaryUpdate: any = {
-          last_statement_month: localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1)),
-          last_statement_balance: statementSummary.currentBill,
-          minimum_payment: statementSummary.minimumPayment,
-          statement_due_date: statementSummary.dueDate,
-          credit_limit: statementSummary.creditLimit || account.credit_limit
+      if (statementSummary) {
+        if (snapshotBalance !== null && snapshotBalance !== undefined) {
+          const monthEnd = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0))
+          const rowsThroughStatement = [...transactions, ...uniqueRows].filter(row => row.transaction_date <= monthEnd)
+          const ledgerActivity = rowsThroughStatement.reduce((sum, row) => sum + transactionBalanceDelta(account.id, account.type, row), 0)
+          const summaryUpdate: any = {
+            opening_balance: snapshotBalance - ledgerActivity,
+            current_balance: snapshotBalance
+          }
+          if (statementKind === 'credit_card') {
+            summaryUpdate.last_statement_month = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1))
+            summaryUpdate.last_statement_balance = snapshotBalance
+            summaryUpdate.minimum_payment = statementSummary.minimumPayment
+            summaryUpdate.statement_due_date = statementSummary.dueDate
+            summaryUpdate.credit_limit = statementSummary.creditLimit || account.credit_limit
+          }
+          const { error: summaryError } = await supabase.from('accounts').update(summaryUpdate).eq('id', account.id).eq('user_id', user.id)
+          if (summaryError) setToast('Transaksi tersimpan, tetapi saldo statement gagal diselaraskan: ' + summaryError.message)
         }
-        const { error: summaryError } = await supabase.from('accounts').update(summaryUpdate).eq('id', account.id).eq('user_id', user.id)
-        if (summaryError) setToast('Transaksi tersimpan, tetapi ringkasan tagihan kartu gagal diperbarui: ' + summaryError.message)
       }
       setStatementDrafts([])
       setStatementSummary(null)
@@ -789,23 +816,10 @@ export default function FinancialPlanner() {
     balanceById.set(account.id, Number(account.opening_balance ?? account.current_balance ?? 0))
   })
   transactions.forEach(tx => {
-    const amount = Number(tx.amount || 0)
-    const source = accounts.find(account => account.id === tx.from_account_id)
-    const destination = accounts.find(account => account.id === tx.to_account_id)
-    if (tx.type === 'income' && source) {
-      balanceById.set(source.id, (balanceById.get(source.id) || 0) + amount)
-    } else if (tx.type === 'transfer' && source) {
-      balanceById.set(source.id, (balanceById.get(source.id) || 0) - amount)
-      if (destination) {
-        // A payment transfer to a card reduces the amount owed.
-        const delta = destination.type === 'credit_card' ? -amount : amount
-        balanceById.set(destination.id, (balanceById.get(destination.id) || 0) + delta)
-      }
-    } else if (tx.type === 'credit_card_purchase' && source?.type === 'credit_card') {
-      balanceById.set(source.id, (balanceById.get(source.id) || 0) + amount)
-    } else if (['expense', 'fee'].includes(tx.type) && source) {
-      balanceById.set(source.id, (balanceById.get(source.id) || 0) - amount)
-    }
+    accounts.forEach(account => {
+      const delta = transactionBalanceDelta(account.id, account.type, tx)
+      if (delta) balanceById.set(account.id, (balanceById.get(account.id) || 0) + delta)
+    })
   })
 
   const balances = Object.entries(accountsByCurrency).map(([currency, accts]: any) => {
@@ -824,7 +838,12 @@ export default function FinancialPlanner() {
   const monthlySpending: any = {}
   transactions.forEach(tx => {
     if (!tx.transaction_date?.startsWith(thisMonth)) return
-    if (tx.type === 'income') monthlyIncome[tx.currency] = (monthlyIncome[tx.currency] || 0) + Number(tx.amount)
+    const sourceAccount = accounts.find(account => account.id === tx.from_account_id)
+    if (tx.type === 'income' && sourceAccount?.type === 'credit_card') {
+      monthlySpending[tx.currency] = (monthlySpending[tx.currency] || 0) - Number(tx.amount)
+    } else if (tx.type === 'income') {
+      monthlyIncome[tx.currency] = (monthlyIncome[tx.currency] || 0) + Number(tx.amount)
+    }
     if (['expense', 'credit_card_purchase', 'fee'].includes(tx.type)) {
       monthlySpending[tx.currency] = (monthlySpending[tx.currency] || 0) + Number(tx.amount)
     }
@@ -837,11 +856,12 @@ export default function FinancialPlanner() {
 
   const spending: any = {}
   transactions.forEach(tx => {
-    if (tx.transaction_date.startsWith(thisMonth) && 
-        ['expense', 'credit_card_purchase', 'fee'].includes(tx.type)) {
+    const sourceAccount = accounts.find(account => account.id === tx.from_account_id)
+    if (tx.transaction_date.startsWith(thisMonth) &&
+        (['expense', 'credit_card_purchase', 'fee'].includes(tx.type) || (tx.type === 'income' && sourceAccount?.type === 'credit_card'))) {
       const key = categoryCurrencyKey(tx.category, tx.currency)
       if (!spending[key]) spending[key] = 0
-      spending[key] += Number(tx.amount)
+      spending[key] += tx.type === 'income' ? -Number(tx.amount) : Number(tx.amount)
     }
   })
 
@@ -1051,8 +1071,7 @@ export default function FinancialPlanner() {
                     <option value="USD">USD</option>
                   </select>
                 </div>
-                <input type="number" className="inp w-full text-sm" placeholder={accountForm.type === 'credit_card' ? 'Tagihan kartu saat ini (0 jika belum ada)' : 'Saldo awal'}
-                  value={accountForm.opening_balance} onChange={e => setAccountForm({ ...accountForm, opening_balance: Number(e.target.value) })} />
+                <p className="rounded-lg bg-white/70 px-3 py-2 text-xs text-gray-600">Saldo awal tidak perlu kamu hitung. Planner akan mencocokkannya dari saldo penutup pada PDF statement yang kamu baca dan simpan.</p>
                 {accountForm.type === 'credit_card' && (
                   <>
                     <input type="number" className="inp w-full text-sm" placeholder="Limit kartu kredit"
@@ -1364,23 +1383,23 @@ export default function FinancialPlanner() {
 
       {tab === 'goals' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Savings Goals</h2><p className="text-sm text-gray-500">Lacak target tabungan. Progres di sini tidak otomatis memindahkan saldo rekening.</p></div><div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2"><input className="inp text-sm" placeholder="Nama tujuan" value={goalForm.name} onChange={e=>setGoalForm({...goalForm,name:e.target.value})}/><input className="inp text-sm" type="number" min="1" placeholder="Target" value={goalForm.target_amount||''} onChange={e=>setGoalForm({...goalForm,target_amount:Number(e.target.value)})}/><select className="sel text-sm" value={goalForm.currency} onChange={e=>setGoalForm({...goalForm,currency:e.target.value})}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select><input className="sel text-sm" type="date" aria-label="Tanggal target" value={goalForm.target_date} onChange={e=>setGoalForm({...goalForm,target_date:e.target.value})}/><button onClick={addGoal} disabled={saving} className="btn-blue btn-sm">Buat tujuan</button></div></div><div className="grid grid-cols-1 md:grid-cols-2 gap-3">{goals.map(goal=>{const current=Number(goal.current_amount||0);const target=Number(goal.target_amount||0);const percent=target>0?Math.min(current/target*100,100):0;return <div key={goal.id} className="card p-4"><div className="flex justify-between"><div><b>{goal.name}</b><div className="text-xs text-gray-500">{goal.target_date||'Tanpa tanggal target'}</div></div><button onClick={()=>archiveGoal(goal.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16}/></button></div><div className="mt-3 flex justify-between text-sm"><span>{formatMoney(current,goal.currency)}</span><b>{formatMoney(target,goal.currency)}</b></div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className="h-2 bg-teal-500 rounded-full" style={{width:`${percent}%`}}/></div><div className="text-xs text-gray-500 mt-1">{percent.toFixed(0)}% tercapai</div>{percent<100&&<div className="flex gap-2 mt-3"><input className="inp text-sm" type="number" min="1" placeholder="Tambah progres" value={goalContributions[goal.id]||''} onChange={e=>setGoalContributions({...goalContributions,[goal.id]:e.target.value})}/><button onClick={()=>addGoalContribution(goal)} className="btn-gray btn-sm">Simpan</button></div>}</div>})}{goals.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada tujuan tabungan.</div>}</div></div>}
 
-      {tab === 'reports' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Laporan Bulanan</h2><p className="text-sm text-gray-500">Ringkasan untuk bulan yang dipilih di bagian atas.</p></div>{summaryCurrencies.map(currency=>{const rows=transactions.filter(tx=>tx.currency===currency&&tx.transaction_date?.startsWith(thisMonth));const income=rows.filter(tx=>tx.type==='income').reduce((sum,tx)=>sum+Number(tx.amount),0);const expenses=rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).reduce((sum,tx)=>sum+Number(tx.amount),0);const cats=new Map();rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).forEach(tx=>cats.set(tx.category||'Lainnya',(cats.get(tx.category||'Lainnya')||0)+Number(tx.amount)));return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Pemasukan</div><b className="text-green-600">{formatMoney(income,currency)}</b></div><div><div className="text-gray-400 text-xs">Pengeluaran</div><b className="text-red-500">{formatMoney(expenses,currency)}</b></div><div><div className="text-gray-400 text-xs">Selisih</div><b>{formatMoney(income-expenses,currency)}</b></div></div><h4 className="font-semibold text-sm">Pengeluaran per kategori</h4>{Array.from(cats.entries()).map(([category,amount])=><div key={String(category)} className="flex justify-between border-b py-2 text-sm"><span>{String(category)}</span><span>{formatMoney(Number(amount),currency)}</span></div>)}{cats.size===0&&<p className="text-sm text-gray-500 mt-2">Belum ada pengeluaran bulan ini.</p>}</div>})}{summaryCurrencies.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada data untuk laporan.</div>}</div>}
+      {tab === 'reports' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Laporan Bulanan</h2><p className="text-sm text-gray-500">Ringkasan untuk bulan yang dipilih di bagian atas.</p></div>{summaryCurrencies.map(currency=>{const rows=transactions.filter(tx=>tx.currency===currency&&tx.transaction_date?.startsWith(thisMonth));const isCardRefund=(tx:any)=>tx.type==='income'&&accounts.find(account=>account.id===tx.from_account_id)?.type==='credit_card';const income=rows.filter(tx=>tx.type==='income'&&!isCardRefund(tx)).reduce((sum,tx)=>sum+Number(tx.amount),0);const expenses=rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).reduce((sum,tx)=>sum+Number(tx.amount),0)-rows.filter(isCardRefund).reduce((sum,tx)=>sum+Number(tx.amount),0);const cats=new Map();rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)||isCardRefund(tx)).forEach(tx=>cats.set(tx.category||'Lainnya',(cats.get(tx.category||'Lainnya')||0)+(isCardRefund(tx)?-Number(tx.amount):Number(tx.amount))));return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Pemasukan</div><b className="text-green-600">{formatMoney(income,currency)}</b></div><div><div className="text-gray-400 text-xs">Pengeluaran</div><b className="text-red-500">{formatMoney(expenses,currency)}</b></div><div><div className="text-gray-400 text-xs">Selisih</div><b>{formatMoney(income-expenses,currency)}</b></div></div><h4 className="font-semibold text-sm">Pengeluaran per kategori</h4>{Array.from(cats.entries()).map(([category,amount])=><div key={String(category)} className="flex justify-between border-b py-2 text-sm"><span>{String(category)}</span><span>{formatMoney(Number(amount),currency)}</span></div>)}{cats.size===0&&<p className="text-sm text-gray-500 mt-2">Belum ada pengeluaran bulan ini.</p>}</div>})}{summaryCurrencies.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada data untuk laporan.</div>}</div>}
 
       {statementModal && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3 sm:p-6" onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFile(null) }}>
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-5" onClick={event => event.stopPropagation()}>
-            <div className="flex items-start justify-between gap-3 mb-4"><div><h2 className="font-bold text-lg">Import E-Statement PDF</h2><p className="text-xs text-gray-500 mt-1">PDF dan password dibaca di browser ini saja. Hanya transaksi yang kamu pilih akan disimpan.</p></div><button onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFile(null) }} className="text-gray-400"><X size={18}/></button></div>
+            <div className="flex items-start justify-between gap-3 mb-4"><div><h2 className="font-bold text-lg">Import E-Statement PDF</h2><p className="text-xs text-gray-500 mt-1">PDF dan password dibaca di browser ini saja. Hanya transaksi yang kamu pilih akan disimpan.</p><p className="text-xs text-blue-700 mt-1">Bulan statement: {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}. Pilih bulan yang sesuai di halaman sebelum membaca PDF.</p></div><button onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFile(null) }} className="text-gray-400"><X size={18}/></button></div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
               <label className="text-xs font-semibold text-gray-600">Jenis statement<select className="sel w-full mt-1" value={statementKind} onChange={event => { setStatementKind(event.target.value as PdfStatementKind); setStatementAccountId(''); setStatementDrafts([]) }}><option value="debit">Rekening debit</option><option value="credit_card">Kartu kredit</option></select></label>
               <label className="text-xs font-semibold text-gray-600">Akun yang sesuai<select className="sel w-full mt-1" value={statementAccountId} onChange={event => setStatementAccountId(event.target.value)}><option value="">Pilih akun...</option>{accounts.filter(account => statementKind === 'credit_card' ? account.type === 'credit_card' : account.type !== 'credit_card').map(account => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label>
               <label className="text-xs font-semibold text-gray-600">Password PDF (kalau diminta)<input className="inp w-full mt-1" type="password" autoComplete="new-password" value={statementPassword} onChange={event => setStatementPassword(event.target.value)} placeholder="Password hanya untuk membuka file" /></label>
             </div>
             <div className="flex flex-wrap items-center gap-2 mb-4"><span className="text-xs text-gray-500">{statementFile?.name || 'Belum ada PDF'}</span><button onClick={readStatementPdf} disabled={!statementFile || statementBusy} className="btn-blue btn-sm">{statementBusy ? 'Membaca PDF…' : 'Baca PDF di perangkat ini'}</button></div>
-            {statementDrafts.length > 0 && <>
+              {statementDrafts.length > 0 && <>
               <div className="rounded-lg bg-amber-50 text-amber-800 p-3 text-xs mb-3">Periksa tanggal, nominal, jenis, dan kategori sebelum disimpan. Parser menggunakan petunjuk dari layout PDF; jika PDF berupa scan gambar, OCR belum tersedia. Baris pembayaran kartu dari e-statement kartu otomatis tidak dipilih agar tidak terhitung dua kali jika pembayaran sudah ada di rekening debit.</div>
               {statementSummary && (statementSummary.currentBill !== null || statementSummary.minimumPayment !== null || statementSummary.closing !== null) && <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">{statementKind === 'credit_card' ? <><div className="card p-3 text-xs">Tagihan bulan lalu<br/><b>{statementSummary.previousBill === null ? '—' : formatMoney(statementSummary.previousBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Tagihan bulan ini<br/><b>{statementSummary.currentBill === null ? '—' : formatMoney(statementSummary.currentBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Pembayaran minimum<br/><b>{statementSummary.minimumPayment === null ? '—' : formatMoney(statementSummary.minimumPayment, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Jatuh tempo<br/><b>{statementSummary.dueDate || '—'}</b></div></> : <><div className="card p-3 text-xs">Saldo awal<br/><b>{statementSummary.opening === null ? '—' : formatMoney(statementSummary.opening, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Mutasi masuk (CR)<br/><b>{statementSummary.credits === null ? '—' : formatMoney(statementSummary.credits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Mutasi keluar (DB)<br/><b>{statementSummary.debits === null ? '—' : formatMoney(statementSummary.debits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Saldo akhir<br/><b>{statementSummary.closing === null ? '—' : formatMoney(statementSummary.closing, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div></>}</div>}
               {statementKind === 'debit' && statementDrafts.some(row => row.type === 'transfer') && <label className="block text-xs font-semibold text-gray-600 mb-3">Akun tujuan untuk transfer kartu<select className="sel mt-1 w-full" value={statementTransferAccountId} onChange={event => setStatementTransferAccountId(event.target.value)}><option value="">Pilih akun tujuan...</option>{accounts.filter(account => account.currency === accounts.find(item => item.id === statementAccountId)?.currency && account.id !== statementAccountId).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
-              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="p-2">Impor</th><th className="p-2">Tanggal</th><th className="p-2">Keterangan</th><th className="p-2">Nominal</th><th className="p-2">Jenis</th><th className="p-2">Kategori</th></tr></thead><tbody>{statementDrafts.map((row,index)=><tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,include:event.target.checked}:item))}/></td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,date:event.target.value}:item))}/></td><td className="p-2"><input className="inp min-w-48 text-xs" value={row.merchant} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,merchant:event.target.value}:item))}/></td><td className="p-2"><input className="inp w-28 text-xs" type="number" min="0" step="0.01" value={row.amount} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,amount:Number(event.target.value)}:item))}/></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,type:event.target.value,include:event.target.value!=='skip'}:item))}>{statementKind==='credit_card'?<><option value="credit_card_purchase">Belanja kartu</option><option value="fee">Biaya/bunga</option><option value="skip">Lewati (mis. pembayaran)</option></>:<><option value="expense">Pengeluaran</option><option value="income">Pemasukan</option><option value="transfer">Transfer</option><option value="fee">Biaya</option><option value="skip">Lewati</option></>}</select></td><td className="p-2"><input className="inp w-28 text-xs" value={row.category} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,category:event.target.value}:item))}/></td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="p-2">Impor</th><th className="p-2">Tanggal</th><th className="p-2">Keterangan</th><th className="p-2">Nominal</th><th className="p-2">Jenis</th><th className="p-2">Kategori</th></tr></thead><tbody>{statementDrafts.map((row,index)=><tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,include:event.target.checked}:item))}/></td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,date:event.target.value}:item))}/></td><td className="p-2"><input className="inp min-w-48 text-xs" value={row.merchant} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,merchant:event.target.value}:item))}/></td><td className="p-2"><input className="inp w-28 text-xs" type="number" min="0" step="0.01" value={row.amount} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,amount:Number(event.target.value)}:item))}/></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,type:event.target.value,include:event.target.value!=='skip'}:item))}>{statementKind==='credit_card'?<><option value="credit_card_purchase">Belanja kartu</option><option value="income">Refund/pengembalian dana</option><option value="fee">Biaya/bunga</option><option value="skip">Lewati (mis. pembayaran)</option></>:<><option value="expense">Pengeluaran</option><option value="income">Pemasukan</option><option value="transfer">Transfer</option><option value="fee">Biaya</option><option value="skip">Lewati</option></>}</select></td><td className="p-2"><input className="inp w-28 text-xs" value={row.category} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,category:event.target.value}:item))}/></td></tr>)}</tbody></table></div>
               <div className="flex justify-end gap-2 mt-4"><button onClick={importStatementDrafts} disabled={saving} className="btn-blue btn-sm">Simpan transaksi terpilih ({statementDrafts.filter(row=>row.include&&row.type!=='skip').length})</button></div>
             </>}
           </div>
