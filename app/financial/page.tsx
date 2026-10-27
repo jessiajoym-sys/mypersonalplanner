@@ -88,7 +88,7 @@ function parseCsv(text: string) {
 }
 
 type PdfStatementKind = 'debit' | 'credit_card'
-type StatementDraft = { id: string; date: string; merchant: string; amount: number; type: string; category: string; include: boolean; raw: string }
+type StatementDraft = { id: string; date: string; merchant: string; amount: number; type: string; category: string; include: boolean; raw: string; sourceFile?: string }
 
 type StatementSummary = { opening: number | null; credits: number | null; debits: number | null; closing: number | null; previousBill: number | null; currentBill: number | null; minimumPayment: number | null; dueDate: string | null; creditLimit: number | null }
 
@@ -111,19 +111,30 @@ function parseStatementSummary(text: string): StatementSummary {
 }
 
 function statementDate(raw: string, year: number) {
-  const match = raw.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/)
+  const match = raw.match(/^(\d{1,2})(?:[/-](\d{1,2})|[-\s]([A-Z]{3}))(?:[/-](\d{2,4}))?$/i)
   if (!match) return ''
   const day = Number(match[1])
-  const month = Number(match[2])
-  const fullYear = match[3] ? (Number(match[3]) < 100 ? 2000 + Number(match[3]) : Number(match[3])) : year
+  const monthNames: Record<string, number> = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, MEI: 5, JUN: 6, JUL: 7, AUG: 8, AGU: 8, SEP: 9, OCT: 10, OKT: 10, NOV: 11, DEC: 12, DES: 12 }
+  const month = match[2] ? Number(match[2]) : monthNames[String(match[3] || '').toUpperCase()]
+  const yearToken = match[4]
+  const fullYear = yearToken ? (Number(yearToken) < 100 ? 2000 + Number(yearToken) : Number(yearToken)) : year
+  if (!month) return ''
   const date = new Date(fullYear, month - 1, day)
   if (date.getFullYear() !== fullYear || date.getMonth() !== month - 1 || date.getDate() !== day) return ''
   return localDateString(date)
 }
 
+function statementMonthFromFilename(name: string, fallback: Date) {
+  const monthNames: Record<string, number> = { JANUARI: 0, JAN: 0, FEBRUARI: 1, FEB: 1, MARET: 2, MAR: 2, APRIL: 3, APR: 3, MEI: 4, MAY: 4, JUNI: 5, JUN: 5, JULI: 6, JUL: 6, AGUSTUS: 7, AGU: 7, AUG: 7, SEPTEMBER: 8, SEP: 8, OKTOBER: 9, OKT: 9, OCT: 9, NOVEMBER: 10, NOV: 10, DESEMBER: 11, DES: 11, DEC: 11 }
+  const upper = name.toLocaleUpperCase()
+  const monthToken = Object.keys(monthNames).sort((a, b) => b.length - a.length).find(token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(upper))
+  const yearMatch = upper.match(/\b20\d{2}\b/)
+  return new Date(yearMatch ? Number(yearMatch[0]) : fallback.getFullYear(), monthToken ? monthNames[monthToken] : fallback.getMonth(), 1)
+}
+
 function parseStatementCandidates(text: string, kind: PdfStatementKind, year: number): StatementDraft[] {
   const lines = text.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean)
-  const starts = /^\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/
+  const starts = /^\d{1,2}(?:[/-]\d{1,2}|[-\s][A-Z]{3})(?:[/-]\d{2,4})?\b/i
   const ignored = /^(saldo awal|saldo akhir|mutasi cr|mutasi db|total tagihan|tagihan bulan|batas kredit|sisa kredit|pembayaran minimum|tanggal jatuh tempo|ringkasan|informasi|jumlah poin|halaman)\b/i
   const records: { first: string; rest: string[] }[] = []
   let current: { first: string; rest: string[] } | null = null
@@ -181,13 +192,14 @@ export default function FinancialPlanner() {
   const csvInputRef = useRef<HTMLInputElement>(null)
   const receiptInputRef = useRef<HTMLInputElement>(null)
   const statementInputRef = useRef<HTMLInputElement>(null)
-  const [statementFile, setStatementFile] = useState<File | null>(null)
+  const [statementFiles, setStatementFiles] = useState<File[]>([])
   const [statementKind, setStatementKind] = useState<PdfStatementKind>('debit')
   const [statementPassword, setStatementPassword] = useState('')
   const [statementAccountId, setStatementAccountId] = useState('')
   const [statementTransferAccountId, setStatementTransferAccountId] = useState('')
   const [statementDrafts, setStatementDrafts] = useState<StatementDraft[]>([])
   const [statementSummary, setStatementSummary] = useState<StatementSummary | null>(null)
+  const [statementSnapshotMonth, setStatementSnapshotMonth] = useState<Date | null>(null)
   const [statementModal, setStatementModal] = useState(false)
   const [statementBusy, setStatementBusy] = useState(false)
 
@@ -288,8 +300,9 @@ export default function FinancialPlanner() {
   }
 
   async function readStatementPdf() {
-    if (!statementFile) { setToast('Pilih file PDF statement terlebih dahulu.'); return }
-    if (statementFile.size > 25 * 1024 * 1024) { setToast('Ukuran statement maksimal 25 MB.'); return }
+    if (!statementFiles.length) { setToast('Pilih satu atau beberapa file PDF statement terlebih dahulu.'); return }
+    const oversized = statementFiles.filter(file => file.size > 25 * 1024 * 1024)
+    if (oversized.length) { setToast('Ukuran maksimal tiap PDF 25 MB. Terlalu besar: ' + oversized.map(file => file.name).join(', ')); return }
     setStatementBusy(true)
     try {
       // PDF bytes and password are processed in this browser; neither is uploaded to Supabase.
@@ -297,62 +310,76 @@ export default function FinancialPlanner() {
       // Serve the matching worker from this app's own origin. package.json's
       // predev/prebuild scripts copy it from pdfjs-dist into /public.
       pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
-      const bytes = new Uint8Array(await statementFile.arrayBuffer())
-      const document = await pdfjs.getDocument({ data: bytes, password: statementPassword || undefined }).promise
-      setStatementPassword('')
-      const pageTexts: string[] = []
-      for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
-        const page = await document.getPage(pageNumber)
-        // Read the PDF.js text stream through its reader API. PDF.js 6's
-        // getTextContent() uses async iteration internally, which throws
-        // "undefined is not a function" in Safari versions whose
-        // ReadableStream does not implement the async iterator interface.
-        const content = { items: [] as any[], styles: Object.create(null) as Record<string, any>, lang: undefined as string | undefined }
-        const textReader = page.streamTextContent().getReader()
+      const allDrafts: StatementDraft[] = []
+      const fileErrors: string[] = []
+      let latestSummary: StatementSummary | null = null
+      let latestSnapshotMonth: Date | null = null
+      const orderedFiles = [...statementFiles].sort((a, b) => statementMonthFromFilename(a.name, selectedMonth).getTime() - statementMonthFromFilename(b.name, selectedMonth).getTime())
+      for (let fileIndex = 0; fileIndex < orderedFiles.length; fileIndex++) {
+        const file = orderedFiles[fileIndex]
         try {
-          while (true) {
-            const chunk = await textReader.read()
-            if (chunk.done) break
-            if (chunk.value.lang) content.lang = chunk.value.lang
-            Object.assign(content.styles, chunk.value.styles)
-            content.items.push(...chunk.value.items)
+          const fileMonth = statementMonthFromFilename(file.name, selectedMonth)
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          const document = await pdfjs.getDocument({ data: bytes, password: statementPassword || undefined }).promise
+          const pageTexts: string[] = []
+          for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+            const page = await document.getPage(pageNumber)
+            // Use the stream reader API for Safari compatibility.
+            const content = { items: [] as any[], styles: Object.create(null) as Record<string, any>, lang: undefined as string | undefined }
+            const textReader = page.streamTextContent().getReader()
+            try {
+              while (true) {
+                const chunk = await textReader.read()
+                if (chunk.done) break
+                if (chunk.value.lang) content.lang = chunk.value.lang
+                Object.assign(content.styles, chunk.value.styles)
+                content.items.push(...chunk.value.items)
+              }
+            } finally { textReader.releaseLock() }
+            const rows: { y: number; x: number; text: string }[] = []
+            for (const item of content.items as any[]) {
+              if (!('str' in item) || !item.str.trim()) continue
+              rows.push({ y: Math.round(item.transform[5]), x: item.transform[4], text: item.str.trim() })
+            }
+            rows.sort((a, b) => b.y - a.y || a.x - b.x)
+            const grouped: { y: number; items: { x: number; text: string }[] }[] = []
+            for (const item of rows) {
+              let line = grouped.find(candidate => Math.abs(candidate.y - item.y) <= 2)
+              if (!line) { line = { y: item.y, items: [] }; grouped.push(line) }
+              line.items.push({ x: item.x, text: item.text })
+            }
+            pageTexts.push(grouped.map(line => line.items.sort((a, b) => a.x - b.x).map(item => item.text).join(' ')).join('\n'))
+            page.cleanup()
           }
-        } finally {
-          textReader.releaseLock()
+          await document.destroy()
+          const extracted = pageTexts.join('\n')
+          if (!extracted.trim()) { fileErrors.push(file.name + ': teks tidak terbaca (mungkin PDF hasil scan).'); continue }
+          const summary = parseStatementSummary(extracted)
+          const snapshotValue = statementKind === 'credit_card' ? summary.currentBill : summary.closing
+          if (snapshotValue !== null && (!latestSnapshotMonth || fileMonth >= latestSnapshotMonth)) {
+            latestSummary = summary
+            latestSnapshotMonth = fileMonth
+          }
+          const drafts = parseStatementCandidates(extracted, statementKind, fileMonth.getFullYear())
+          if (!drafts.length) { fileErrors.push(file.name + ': teks terbaca tetapi format transaksi belum dikenali.'); continue }
+          allDrafts.push(...drafts.map((draft, rowIndex) => ({ ...draft, id: fileIndex + '-' + rowIndex + '-' + draft.id, sourceFile: file.name })))
+        } catch (error: any) {
+          fileErrors.push(file.name + ': ' + (String(error?.message || '').toLowerCase().includes('password') ? 'password salah atau berbeda.' : String(error?.message || 'gagal dibaca.')))
         }
-        const rows: { y: number; x: number; text: string }[] = []
-        for (const item of content.items as any[]) {
-          if (!('str' in item) || !item.str.trim()) continue
-          rows.push({ y: Math.round(item.transform[5]), x: item.transform[4], text: item.str.trim() })
-        }
-        rows.sort((a, b) => b.y - a.y || a.x - b.x)
-        const grouped: { y: number; items: { x: number; text: string }[] }[] = []
-        for (const item of rows) {
-          let line = grouped.find(candidate => Math.abs(candidate.y - item.y) <= 2)
-          if (!line) { line = { y: item.y, items: [] }; grouped.push(line) }
-          line.items.push({ x: item.x, text: item.text })
-        }
-        pageTexts.push(grouped.map(line => line.items.sort((a, b) => a.x - b.x).map(item => item.text).join(' ')).join('\n'))
-        page.cleanup()
       }
-      const extracted = pageTexts.join('\n')
-      if (!extracted.trim()) {
+      setStatementPassword('')
+      setStatementSummary(latestSummary)
+      setStatementSnapshotMonth(latestSnapshotMonth)
+      if (!allDrafts.length) {
         setStatementDrafts([])
-        setToast('PDF ini tampaknya hasil scan gambar. Pembacaan otomatis untuk PDF gambar belum tersedia.')
+        setToast('Belum ada transaksi yang dikenali. ' + fileErrors.join(' '))
         return
       }
-      setStatementSummary(parseStatementSummary(extracted))
-      const drafts = parseStatementCandidates(extracted, statementKind, selectedMonth.getFullYear())
-      if (!drafts.length) {
-        setStatementDrafts([])
-        setToast('Teks terbaca, tetapi format baris transaksi belum dikenali. Tidak ada data yang disimpan.')
-        return
-      }
-      setStatementDrafts(drafts)
+      setStatementDrafts(allDrafts)
       setStatementPassword('')
       const matching = accounts.filter(account => statementKind === 'credit_card' ? account.type === 'credit_card' : account.type !== 'credit_card')
       if (!matching.some(account => account.id === statementAccountId)) setStatementAccountId(matching[0]?.id || '')
-      setToast(drafts.length + ' baris calon transaksi ditemukan. Periksa satu per satu sebelum menyimpan.')
+      setToast(allDrafts.length + ' baris dari ' + orderedFiles.length + ' PDF ditemukan. Periksa sebelum menyimpan.' + (fileErrors.length ? ' Sebagian file perlu dicek: ' + fileErrors.join(' ') : ''))
     } catch (error: any) {
       setStatementPassword('')
       const message = String(error?.message || '')
@@ -382,7 +409,12 @@ export default function FinancialPlanner() {
       description: 'Diimpor dari PDF statement', transaction_date: row.date, source: 'statement_pdf'
     }))
     const signatures = new Set(transactions.map(tx => [tx.transaction_date, tx.from_account_id, tx.type, Number(tx.amount), String(tx.merchant || '').trim().toLowerCase()].join('|')))
-    const uniqueRows = rows.filter(row => !signatures.has([row.transaction_date, row.from_account_id, row.type, Number(row.amount), String(row.merchant || '').trim().toLowerCase()].join('|')))
+    const uniqueRows = rows.filter(row => {
+      const signature = [row.transaction_date, row.from_account_id, row.type, Number(row.amount), String(row.merchant || '').trim().toLowerCase()].join('|')
+      if (signatures.has(signature)) return false
+      signatures.add(signature)
+      return true
+    })
     if (!uniqueRows.length) { setToast('Transaksi ini tampaknya sudah pernah diimpor. Tidak ada duplikat yang disimpan.'); return }
     const skipped = rows.length - uniqueRows.length
     const snapshotBalance = statementKind === 'credit_card' ? statementSummary?.currentBill : statementSummary?.closing
@@ -396,7 +428,8 @@ export default function FinancialPlanner() {
       if (error) throw error
       if (statementSummary) {
         if (snapshotBalance !== null && snapshotBalance !== undefined) {
-          const monthEnd = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0))
+          const snapshotMonth = statementSnapshotMonth || selectedMonth
+          const monthEnd = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth() + 1, 0))
           const rowsThroughStatement = [...transactions, ...uniqueRows].filter(row => row.transaction_date <= monthEnd)
           const ledgerActivity = rowsThroughStatement.reduce((sum, row) => sum + transactionBalanceDelta(account.id, account.type, row), 0)
           const summaryUpdate: any = {
@@ -404,7 +437,7 @@ export default function FinancialPlanner() {
             current_balance: snapshotBalance
           }
           if (statementKind === 'credit_card') {
-            summaryUpdate.last_statement_month = localDateString(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1))
+            summaryUpdate.last_statement_month = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth(), 1))
             summaryUpdate.last_statement_balance = snapshotBalance
             summaryUpdate.minimum_payment = statementSummary.minimumPayment
             summaryUpdate.statement_due_date = statementSummary.dueDate
@@ -416,7 +449,7 @@ export default function FinancialPlanner() {
       }
       setStatementDrafts([])
       setStatementSummary(null)
-      setStatementFile(null)
+      setStatementFiles([])
       setStatementModal(false)
       const refreshed = await load()
       setToast(refreshed ? uniqueRows.length + ' transaksi dari statement berhasil disimpan.' : 'Transaksi terkirim, tetapi daftar gagal dimuat ulang.')
@@ -894,12 +927,14 @@ export default function FinancialPlanner() {
           {showBalances ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
           <input ref={csvInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={importCsvFile} />
-          <input ref={statementInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={event => {
-            const file = event.target.files?.[0] || null
+          <input ref={statementInputRef} type="file" accept="application/pdf,.pdf" multiple className="hidden" onChange={event => {
+            const files = Array.from(event.target.files || [])
             event.target.value = ''
-            if (!file) return
-            setStatementFile(file)
+            if (!files.length) return
+            setStatementFiles(files)
             setStatementDrafts([])
+            setStatementSummary(null)
+            setStatementSnapshotMonth(null)
             setStatementPassword('')
             setStatementModal(true)
           }} />
@@ -1402,20 +1437,20 @@ export default function FinancialPlanner() {
       {tab === 'reports' && <div className="space-y-4"><div className="card p-5"><h2 className="font-bold text-lg">Laporan Bulanan</h2><p className="text-sm text-gray-500">Ringkasan untuk bulan yang dipilih di bagian atas.</p></div>{summaryCurrencies.map(currency=>{const rows=transactions.filter(tx=>tx.currency===currency&&tx.transaction_date?.startsWith(thisMonth));const isCardRefund=(tx:any)=>tx.type==='income'&&accounts.find(account=>account.id===tx.from_account_id)?.type==='credit_card';const income=rows.filter(tx=>tx.type==='income'&&!isCardRefund(tx)).reduce((sum,tx)=>sum+Number(tx.amount),0);const expenses=rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)).reduce((sum,tx)=>sum+Number(tx.amount),0)-rows.filter(isCardRefund).reduce((sum,tx)=>sum+Number(tx.amount),0);const cats=new Map();rows.filter(tx=>['expense','fee','credit_card_purchase'].includes(tx.type)||isCardRefund(tx)).forEach(tx=>cats.set(tx.category||'Lainnya',(cats.get(tx.category||'Lainnya')||0)+(isCardRefund(tx)?-Number(tx.amount):Number(tx.amount))));return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Pemasukan</div><b className="text-green-600">{formatMoney(income,currency)}</b></div><div><div className="text-gray-400 text-xs">Pengeluaran</div><b className="text-red-500">{formatMoney(expenses,currency)}</b></div><div><div className="text-gray-400 text-xs">Selisih</div><b>{formatMoney(income-expenses,currency)}</b></div></div><h4 className="font-semibold text-sm">Pengeluaran per kategori</h4>{Array.from(cats.entries()).map(([category,amount])=><div key={String(category)} className="flex justify-between border-b py-2 text-sm"><span>{String(category)}</span><span>{formatMoney(Number(amount),currency)}</span></div>)}{cats.size===0&&<p className="text-sm text-gray-500 mt-2">Belum ada pengeluaran bulan ini.</p>}</div>})}{summaryCurrencies.length===0&&<div className="card p-5 text-sm text-gray-500">Belum ada data untuk laporan.</div>}</div>}
 
       {statementModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3 sm:p-6" onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFile(null) }}>
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3 sm:p-6" onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFiles([]) }}>
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-5" onClick={event => event.stopPropagation()}>
-            <div className="flex items-start justify-between gap-3 mb-4"><div><h2 className="font-bold text-lg">Import E-Statement PDF</h2><p className="text-xs text-gray-500 mt-1">PDF dan password dibaca di browser ini saja. Hanya transaksi yang kamu pilih akan disimpan.</p><p className="text-xs text-blue-700 mt-1">Bulan statement: {selectedMonth.toLocaleDateString('id-ID',{month:'long',year:'numeric'})}. Pilih bulan yang sesuai di halaman sebelum membaca PDF.</p></div><button onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFile(null) }} className="text-gray-400"><X size={18}/></button></div>
+            <div className="flex items-start justify-between gap-3 mb-4"><div><h2 className="font-bold text-lg">Import Banyak E-Statement PDF</h2><p className="text-xs text-gray-500 mt-1">PDF dan password dibaca di browser ini saja. Pilih beberapa PDF sekaligus; hanya transaksi yang kamu pilih akan disimpan.</p><p className="text-xs text-amber-700 mt-1">Dalam satu batch, pilih PDF untuk akun dan jenis statement yang sama, dengan password yang sama. Kalau PDF-nya dari akun berbeda, buat batch terpisah. Bulan akan dibaca dari nama file (contoh: BCA Januari 2026.pdf); jika tidak ada, planner memakai bulan yang dipilih di halaman.</p></div><button onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFiles([]) }} className="text-gray-400"><X size={18}/></button></div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
               <label className="text-xs font-semibold text-gray-600">Jenis statement<select className="sel w-full mt-1" value={statementKind} onChange={event => { setStatementKind(event.target.value as PdfStatementKind); setStatementAccountId(''); setStatementDrafts([]) }}><option value="debit">Rekening debit</option><option value="credit_card">Kartu kredit</option></select></label>
               <label className="text-xs font-semibold text-gray-600">Akun yang sesuai<select className="sel w-full mt-1" value={statementAccountId} onChange={event => setStatementAccountId(event.target.value)}><option value="">Pilih akun...</option>{accounts.filter(account => statementKind === 'credit_card' ? account.type === 'credit_card' : account.type !== 'credit_card').map(account => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label>
               <label className="text-xs font-semibold text-gray-600">Password PDF (kalau diminta)<input className="inp w-full mt-1" type="password" autoComplete="new-password" value={statementPassword} onChange={event => setStatementPassword(event.target.value)} placeholder="Password hanya untuk membuka file" /></label>
             </div>
-            <div className="flex flex-wrap items-center gap-2 mb-4"><span className="text-xs text-gray-500">{statementFile?.name || 'Belum ada PDF'}</span><button onClick={readStatementPdf} disabled={!statementFile || statementBusy} className="btn-blue btn-sm">{statementBusy ? 'Membaca PDF…' : 'Baca PDF di perangkat ini'}</button></div>
+            <div className="mb-4"><div className="max-h-24 overflow-y-auto text-xs text-gray-500 mb-2">{statementFiles.length ? statementFiles.map(file => <div key={file.name}>{file.name}</div>) : 'Belum ada PDF'}</div><button onClick={readStatementPdf} disabled={!statementFiles.length || statementBusy} className="btn-blue btn-sm">{statementBusy ? 'Membaca PDF…' : 'Baca ' + statementFiles.length + ' PDF di perangkat ini'}</button></div>
               {statementDrafts.length > 0 && <>
               <div className="rounded-lg bg-amber-50 text-amber-800 p-3 text-xs mb-3">Periksa tanggal, nominal, jenis, dan kategori sebelum disimpan. Parser menggunakan petunjuk dari layout PDF; jika PDF berupa scan gambar, OCR belum tersedia. Baris pembayaran kartu dari e-statement kartu otomatis tidak dipilih agar tidak terhitung dua kali jika pembayaran sudah ada di rekening debit.</div>
               {statementSummary && (statementSummary.currentBill !== null || statementSummary.minimumPayment !== null || statementSummary.closing !== null) && <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">{statementKind === 'credit_card' ? <><div className="card p-3 text-xs">Tagihan bulan lalu<br/><b>{statementSummary.previousBill === null ? '—' : formatMoney(statementSummary.previousBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Tagihan bulan ini<br/><b>{statementSummary.currentBill === null ? '—' : formatMoney(statementSummary.currentBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Pembayaran minimum<br/><b>{statementSummary.minimumPayment === null ? '—' : formatMoney(statementSummary.minimumPayment, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Jatuh tempo<br/><b>{statementSummary.dueDate || '—'}</b></div></> : <><div className="card p-3 text-xs">Saldo awal<br/><b>{statementSummary.opening === null ? '—' : formatMoney(statementSummary.opening, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Mutasi masuk (CR)<br/><b>{statementSummary.credits === null ? '—' : formatMoney(statementSummary.credits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Mutasi keluar (DB)<br/><b>{statementSummary.debits === null ? '—' : formatMoney(statementSummary.debits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Saldo akhir<br/><b>{statementSummary.closing === null ? '—' : formatMoney(statementSummary.closing, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div></>}</div>}
               {statementKind === 'debit' && statementDrafts.some(row => row.type === 'transfer') && <label className="block text-xs font-semibold text-gray-600 mb-3">Akun tujuan untuk transfer kartu<select className="sel mt-1 w-full" value={statementTransferAccountId} onChange={event => setStatementTransferAccountId(event.target.value)}><option value="">Pilih akun tujuan...</option>{accounts.filter(account => account.currency === accounts.find(item => item.id === statementAccountId)?.currency && account.id !== statementAccountId).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
-              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="p-2">Impor</th><th className="p-2">Tanggal</th><th className="p-2">Keterangan</th><th className="p-2">Nominal</th><th className="p-2">Jenis</th><th className="p-2">Kategori</th></tr></thead><tbody>{statementDrafts.map((row,index)=><tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,include:event.target.checked}:item))}/></td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,date:event.target.value}:item))}/></td><td className="p-2"><input className="inp min-w-48 text-xs" value={row.merchant} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,merchant:event.target.value}:item))}/></td><td className="p-2"><input className="inp w-28 text-xs" type="number" min="0" step="0.01" value={row.amount} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,amount:Number(event.target.value)}:item))}/></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,type:event.target.value,include:event.target.value!=='skip'}:item))}>{statementKind==='credit_card'?<><option value="credit_card_purchase">Belanja kartu</option><option value="income">Refund/pengembalian dana</option><option value="fee">Biaya/bunga</option><option value="skip">Lewati (mis. pembayaran)</option></>:<><option value="expense">Pengeluaran</option><option value="income">Pemasukan</option><option value="transfer">Transfer</option><option value="fee">Biaya</option><option value="skip">Lewati</option></>}</select></td><td className="p-2"><input className="inp w-28 text-xs" value={row.category} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,category:event.target.value}:item))}/></td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="p-2">Impor</th><th className="p-2">Sumber PDF</th><th className="p-2">Tanggal</th><th className="p-2">Keterangan</th><th className="p-2">Nominal</th><th className="p-2">Jenis</th><th className="p-2">Kategori</th></tr></thead><tbody>{statementDrafts.map((row,index)=><tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,include:event.target.checked}:item))}/></td><td className="p-2 max-w-40 truncate" title={row.sourceFile}>{row.sourceFile}</td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,date:event.target.value}:item))}/></td><td className="p-2"><input className="inp min-w-48 text-xs" value={row.merchant} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,merchant:event.target.value}:item))}/></td><td className="p-2"><input className="inp w-28 text-xs" type="number" min="0" step="0.01" value={row.amount} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,amount:Number(event.target.value)}:item))}/></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,type:event.target.value,include:event.target.value!=='skip'}:item))}>{statementKind==='credit_card'?<><option value="credit_card_purchase">Belanja kartu</option><option value="income">Refund/pengembalian dana</option><option value="fee">Biaya/bunga</option><option value="skip">Lewati (mis. pembayaran)</option></>:<><option value="expense">Pengeluaran</option><option value="income">Pemasukan</option><option value="transfer">Transfer</option><option value="fee">Biaya</option><option value="skip">Lewati</option></>}</select></td><td className="p-2"><input className="inp w-28 text-xs" value={row.category} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,category:event.target.value}:item))}/></td></tr>)}</tbody></table></div>
               <div className="flex justify-end gap-2 mt-4"><button onClick={importStatementDrafts} disabled={saving} className="btn-blue btn-sm">Simpan transaksi terpilih ({statementDrafts.filter(row=>row.include&&row.type!=='skip').length})</button></div>
             </>}
           </div>
