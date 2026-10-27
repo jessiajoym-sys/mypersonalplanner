@@ -405,7 +405,7 @@ export default function FinancialPlanner() {
       user_id: user.id, type: row.type, amount: row.amount, currency: account.currency,
       from_account_id: account.id, to_account_id: row.type === 'transfer' ? target?.id : null,
       category: row.category.trim() || 'Lainnya', merchant: row.merchant.trim() || null,
-      description: 'Diimpor dari PDF statement', transaction_date: row.date, source: 'statement_pdf'
+      description: 'Diimpor dari PDF statement', transaction_date: row.date, source: 'manual'
     }))
     const signatures = new Set(transactions.map(tx => [tx.transaction_date, tx.from_account_id, tx.type, Number(tx.amount), String(tx.merchant || '').trim().toLowerCase()].join('|')))
     const uniqueRows = rows.filter(row => {
