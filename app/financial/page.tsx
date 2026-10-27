@@ -303,7 +303,23 @@ export default function FinancialPlanner() {
       const pageTexts: string[] = []
       for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
         const page = await document.getPage(pageNumber)
-        const content = await page.getTextContent()
+        // Read the PDF.js text stream through its reader API. PDF.js 6's
+        // getTextContent() uses async iteration internally, which throws
+        // "undefined is not a function" in Safari versions whose
+        // ReadableStream does not implement the async iterator interface.
+        const content = { items: [] as any[], styles: Object.create(null) as Record<string, any>, lang: undefined as string | undefined }
+        const textReader = page.streamTextContent().getReader()
+        try {
+          while (true) {
+            const chunk = await textReader.read()
+            if (chunk.done) break
+            if (chunk.value.lang) content.lang = chunk.value.lang
+            Object.assign(content.styles, chunk.value.styles)
+            content.items.push(...chunk.value.items)
+          }
+        } finally {
+          textReader.releaseLock()
+        }
         const rows: { y: number; x: number; text: string }[] = []
         for (const item of content.items as any[]) {
           if (!('str' in item) || !item.str.trim()) continue
