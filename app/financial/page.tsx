@@ -351,7 +351,6 @@ export default function FinancialPlanner() {
             pageTexts.push(grouped.map(line => line.items.sort((a, b) => a.x - b.x).map(item => item.text).join(' ')).join('\n'))
             page.cleanup()
           }
-          await document.destroy()
           const extracted = pageTexts.join('\n')
           if (!extracted.trim()) { fileErrors.push(file.name + ': teks tidak terbaca (mungkin PDF hasil scan).'); continue }
           const summary = parseStatementSummary(extracted)
