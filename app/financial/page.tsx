@@ -949,21 +949,6 @@ export default function FinancialPlanner() {
     }
   })
 
-  const monthlyLocalInsights = summaryCurrencies.map(currency => {
-    const rows = transactions.filter(tx => tx.currency === currency && tx.transaction_date?.startsWith(thisMonth))
-    const categoryTotals = new Map<string, number>()
-    rows.forEach(tx => {
-      const sourceAccount = accounts.find(account => account.id === tx.from_account_id)
-      const isSpending = ['expense', 'credit_card_purchase', 'fee'].includes(tx.type) || (tx.type === 'income' && sourceAccount?.type === 'credit_card')
-      if (isSpending) {
-        const category = tx.category || 'Other'
-        categoryTotals.set(category, (categoryTotals.get(category) || 0) + (tx.type === 'income' ? -Number(tx.amount) : Number(tx.amount)))
-      }
-    })
-    const topCategory = Array.from(categoryTotals.entries()).sort((a, b) => b[1] - a[1])[0]
-    return { currency, income: monthlyIncome[currency] || 0, expenses: monthlySpending[currency] || 0, topCategory }
-  })
-
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <datalist id="finance-category-options">{FINANCE_CATEGORIES.map(category => <option key={category} value={category} />)}</datalist>
@@ -1109,12 +1094,7 @@ export default function FinancialPlanner() {
             {summaryCurrencies.length === 0 && <div className="card p-4 text-sm text-gray-500 md:col-span-2">Add an account or transaction to see your monthly summary.</div>}
           </div>
 
-          <div className="card p-5 md:p-6 border border-teal-100">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-2"><h2 className="font-bold text-lg">Private Money Insights</h2><span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-700">Calculated on this device</span></div>
-            <p className="text-xs text-gray-500 mb-4">These on-device insights use saved monthly totals and simple rules. This is not generative AI. Your PDFs, PDF passwords, account numbers, account names, and transaction descriptions are not sent to an AI service.</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{monthlyLocalInsights.map(insight => <div key={insight.currency} className="rounded-xl bg-gray-50 p-4"><div className="text-xs font-semibold text-gray-500 mb-2">{insight.currency} · {selectedMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div><p className="text-sm">{insight.expenses > insight.income ? `Spending is ${formatMoney(insight.expenses - insight.income, insight.currency)} above recorded income this month.` : 'Recorded spending is within recorded income this month.'}</p>{insight.topCategory && <p className="text-sm mt-2">Highest spending category: <b>{insight.topCategory[0]}</b> ({formatMoney(insight.topCategory[1], insight.currency)}).</p>}</div>)}</div>
-            {monthlyLocalInsights.length === 0 && <p className="text-sm text-gray-500">Add transactions to see private monthly insights.</p>}
-          </div>
+          <div className="card p-5 md:p-6 border border-teal-100"><div className="flex flex-wrap items-center justify-between gap-2 mb-2"><h2 className="font-bold text-lg">Private Money Insights</h2><span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-700">Calculated on this device</span></div><p className="text-xs text-gray-500 mb-4">These simple monthly insights are calculated on your device. This is not generative AI. PDFs, PDF passwords, account numbers, and transaction data are not sent to an AI service.</p><div className="space-y-2">{summaryCurrencies.map(currency => <p key={currency} className="rounded-xl bg-gray-50 p-3 text-sm">{(monthlySpending[currency] || 0) > (monthlyIncome[currency] || 0) ? currency + ': Spending is ' + formatMoney((monthlySpending[currency] || 0) - (monthlyIncome[currency] || 0), currency) + ' above recorded income this month.' : currency + ': Recorded spending is within recorded income this month.'}</p>)}</div>{summaryCurrencies.length === 0 && <p className="text-sm text-gray-500">Add transactions to see private monthly insights.</p>}</div>
 
           {/* Recent Transactions */}
           <div className="card">
