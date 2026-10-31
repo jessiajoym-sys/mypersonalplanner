@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { format } from 'date-fns'
+import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns'
 import { Plus, Trash2, X } from 'lucide-react'
 
 export default function DailyLogPage() {
@@ -9,21 +9,27 @@ export default function DailyLogPage() {
   const [todos, setTodos] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [view, setView] = useState<'today' | 'week' | 'month'>('today')
   const [showAddLog, setShowAddLog] = useState<string | null>(null)
   const [logForm, setLogForm] = useState({ content: '', type: 'work_log' })
 
-  useEffect(() => { load() }, [selectedDate])
+  useEffect(() => { load() }, [selectedDate, view])
 
   async function load() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    if (!user) { setLoading(false); return }
 
-    // Fetch daily logs
+    const selected = new Date(`${selectedDate}T12:00:00`)
+    const rangeStart = view === 'week' ? format(startOfWeek(selected, { weekStartsOn: 1 }), 'yyyy-MM-dd') : view === 'month' ? format(startOfMonth(selected), 'yyyy-MM-dd') : selectedDate
+    const rangeEnd = view === 'week' ? format(endOfWeek(selected, { weekStartsOn: 1 }), 'yyyy-MM-dd') : view === 'month' ? format(endOfMonth(selected), 'yyyy-MM-dd') : selectedDate
+
+    // Fetch log entries for the selected day, week, or month.
     const { data: logsData } = await supabase.from('daily_logs')
       .select('*')
       .eq('user_id', user.id)
-      .eq('date', selectedDate)
+      .gte('date', rangeStart)
+      .lte('date', rangeEnd)
       .order('created_at', { ascending: false })
 
     // Fetch todos (all, to check which ones are from today)
@@ -60,35 +66,29 @@ export default function DailyLogPage() {
     load()
   }
 
-  async function markTodoDone(todoId: string, title: string) {
+  async function markTodoDone(todoId: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
-
-    // Mark todo as done
-    await supabase.from('todos').update({ status: 'done' }).eq('id', todoId)
-
-    // Add to accomplishments
-    await supabase.from('daily_logs').insert({
-      user_id: user.id,
-      date: selectedDate,
-      type: 'accomplishment',
-      content: title,
-      time_logged: format(new Date(), 'HH:mm'),
-    })
+    const task = todos.find(item => item.id === todoId)
+    if (!task) return
+    const done = task.status !== 'done'
+    await supabase.from('todos').update({ status: done ? 'done' : 'pending', completed_at: done ? new Date().toISOString() : null }).eq('id', todoId).eq('user_id', user.id)
     load()
   }
 
-  // Get tasks received today (todos created today or with deadline today)
+  const selected = new Date(`${selectedDate}T12:00:00`)
+  const rangeStart = view === 'week' ? format(startOfWeek(selected, { weekStartsOn: 1 }), 'yyyy-MM-dd') : view === 'month' ? format(startOfMonth(selected), 'yyyy-MM-dd') : selectedDate
+  const rangeEnd = view === 'week' ? format(endOfWeek(selected, { weekStartsOn: 1 }), 'yyyy-MM-dd') : view === 'month' ? format(endOfMonth(selected), 'yyyy-MM-dd') : selectedDate
+  // Get tasks received in the selected period (created or due in that period).
   const tasksReceived = todos.filter(t => {
     const createdDate = format(new Date(t.created_at), 'yyyy-MM-dd')
-    const deadlineMatch = t.deadline === selectedDate
-    return createdDate === selectedDate || deadlineMatch
+    return (createdDate >= rangeStart && createdDate <= rangeEnd) || (t.deadline >= rangeStart && t.deadline <= rangeEnd)
   })
 
   // Get accomplishments (todos marked done today + daily logs)
   const accomplishmentLogs = logs.filter(l => l.type === 'accomplishment')
   const completedTodos = todos.filter(t =>
-    t.status === 'done' && t.updated_at && format(new Date(t.updated_at), 'yyyy-MM-dd') === selectedDate
+    t.status === 'done' && t.completed_at && format(new Date(t.completed_at), 'yyyy-MM-dd') >= rangeStart && format(new Date(t.completed_at), 'yyyy-MM-dd') <= rangeEnd && !accomplishmentLogs.some(log => log.content === t.title)
   )
 
   // Get work logs
@@ -114,6 +114,10 @@ export default function DailyLogPage() {
         <button onClick={() => setSelectedDate(format(new Date(), 'yyyy-MM-dd'))}
           className="btn-blue text-xs">Today</button>
       </div>
+      <div className="flex gap-2 mb-4">
+        {(['today', 'week', 'month'] as const).map(period => <button key={period} onClick={() => setView(period)} className={`rounded-full px-4 py-2 text-xs font-semibold capitalize ${view === period ? 'bg-teal-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-100'}`}>{period === 'today' ? 'Day' : period}</button>)}
+        <span className="self-center text-xs text-gray-400">Showing {rangeStart}{rangeStart !== rangeEnd ? ` to ${rangeEnd}` : ''}</span>
+      </div>
 
       {loading ? (
         <div className="text-center py-10 text-gray-400">Loading...</div>
@@ -122,7 +126,7 @@ export default function DailyLogPage() {
           {/* TASKS RECEIVED TODAY */}
           <div className="card mb-4">
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-blue-50">
-              <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">📥 Tasks Received Today</span>
+            <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">📥 Tasks Received {view === 'today' ? 'Today' : view === 'week' ? 'This Week' : 'This Month'}</span>
               <span className="tag bg-blue-100 text-blue-600 text-xs">{tasksReceived.length}</span>
             </div>
             {tasksReceived.length === 0 ? (
@@ -133,7 +137,7 @@ export default function DailyLogPage() {
                   <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 group">
                     <div className={`w-4 h-4 rounded border-2 flex-shrink-0 cursor-pointer transition-all
                       ${t.status === 'done' ? 'bg-green-500 border-green-500' : 'border-gray-300 hover:border-green-400'}`}
-                      onClick={() => markTodoDone(t.id, t.title)} />
+                      onClick={() => markTodoDone(t.id)} />
                     <div className="flex-1">
                       <div className={`text-sm ${t.status === 'done' ? 'line-through text-gray-400' : ''}`}>
                         {t.title}
@@ -144,7 +148,7 @@ export default function DailyLogPage() {
                       </div>
                     </div>
                     {t.status !== 'done' && (
-                      <button onClick={() => markTodoDone(t.id, t.title)}
+                      <button onClick={() => markTodoDone(t.id)}
                         className="opacity-0 group-hover:opacity-100 text-xs text-blue-500 font-semibold transition-all">
                         Mark done
                       </button>
@@ -158,7 +162,7 @@ export default function DailyLogPage() {
           {/* TODAY'S ACCOMPLISHMENTS */}
           <div className="card mb-4">
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-green-50">
-              <span className="text-xs font-bold text-green-600 uppercase tracking-wide">🏆 Today's Accomplishments</span>
+              <span className="text-xs font-bold text-green-600 uppercase tracking-wide">🏆 Accomplishments {view === 'today' ? 'Today' : view === 'week' ? 'This Week' : 'This Month'}</span>
               <span className="tag bg-green-100 text-green-600 text-xs">{accomplishmentLogs.length + completedTodos.length}</span>
             </div>
             {accomplishmentLogs.length === 0 && completedTodos.length === 0 ? (

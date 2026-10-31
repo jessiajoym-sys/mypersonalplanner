@@ -14,7 +14,9 @@ const BIZ_INFO: Record<string, any> = {
 export default function BusinessPage() {
   const path = usePathname()
   const slug = path.split('/').pop() || 'sambal'
-  const info = BIZ_INFO[slug] || BIZ_INFO.sambal
+  const [businessRecord, setBusinessRecord] = useState<any>(null)
+  const baseInfo = BIZ_INFO[slug] || BIZ_INFO.sambal
+  const info = businessRecord ? { ...baseInfo, name: businessRecord.name, emoji: businessRecord.emoji || baseInfo.emoji, color: businessRecord.color || baseInfo.color, desc: businessRecord.description || baseInfo.desc } : baseInfo
   const [todos, setTodos] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [activeTab, setActiveTab] = useState('overview')
@@ -25,9 +27,11 @@ export default function BusinessPage() {
   async function load() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
+    const { data: business } = await supabase.from('businesses').select('*').eq('user_id', user.id).eq('id', slug).maybeSingle()
+    if (business) setBusinessRecord(business)
     const [t, tr] = await Promise.all([
       supabase.from('todos').select('*').eq('user_id', user.id).eq('business_id', slug).order('created_at', { ascending: false }),
-      supabase.from('transactions').select('*').eq('user_id', user.id).eq('business_id', slug).order('date', { ascending: false }).limit(10),
+      supabase.from('transactions').select('*').eq('user_id', user.id).eq('business_id', slug).is('deleted_at', null).order('transaction_date', { ascending: false }),
     ])
     if (t.data) setTodos(t.data)
     if (tr.data) setTransactions(tr.data)
@@ -47,8 +51,10 @@ export default function BusinessPage() {
     load()
   }
 
-  const totalIn = transactions.reduce((s, t) => s + (t.kredit || 0), 0)
-  const totalOut = transactions.reduce((s, t) => s + (t.debit || 0), 0)
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const monthTransactions = transactions.filter(t => t.transaction_date?.startsWith(currentMonth))
+  const totalIn = monthTransactions.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount || 0), 0)
+  const totalOut = monthTransactions.filter(t => ['expense', 'fee', 'credit_card_purchase'].includes(t.type)).reduce((s, t) => s + Number(t.amount || 0), 0)
 
   return (
     <div>
@@ -107,14 +113,14 @@ export default function BusinessPage() {
       {activeTab === 'financial' && (
         <div>
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3 text-xs text-blue-600">
-            🔗 Transactions with category "{info.name}" from Financial Planner appear here automatically.
+            🔗 Transactions assigned to {info.name} in Financial Planner appear here automatically.
           </div>
           <div className="card">
-            {transactions.length === 0 ? <div className="p-6 text-center text-xs text-gray-400">No transactions yet. Add them in Financial Planner with category "{info.name}"</div> :
+            {transactions.length === 0 ? <div className="p-6 text-center text-xs text-gray-400">No transactions yet. Add them in Financial Planner and choose {info.name} in the Business field.</div> :
               transactions.map(t => (
                 <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50">
-                  <div className="flex-1"><div className="text-sm font-medium">{t.description}</div><div className="text-xs text-gray-400">{t.date}</div></div>
-                  <span className={`text-sm font-bold ${t.kredit ? 'text-green-500' : 'text-red-500'}`}>{t.kredit ? `+Rp ${t.kredit.toLocaleString()}` : `-Rp ${t.debit?.toLocaleString()}`}</span>
+                  <div className="flex-1"><div className="text-sm font-medium">{t.merchant || t.description || t.category}</div><div className="text-xs text-gray-400">{t.transaction_date} · {t.category}</div></div>
+                  <span className={`text-sm font-bold ${t.type === 'income' ? 'text-green-500' : 'text-red-500'}`}>{t.type === 'income' ? '+' : '−'}{new Intl.NumberFormat('en-US', { style: 'currency', currency: t.currency || 'IDR', maximumFractionDigits: 0 }).format(Number(t.amount || 0))}</span>
                 </div>
               ))}
           </div>
@@ -123,7 +129,7 @@ export default function BusinessPage() {
 
       {activeTab === 'content' && (
         <div className="card p-4">
-          <div className="text-sm text-gray-400 text-center py-8">Content planning coming soon!</div>
+          <div className="text-sm text-gray-500 text-center py-8">Plan business content in the Travel Content Studio.</div>
         </div>
       )}
     </div>

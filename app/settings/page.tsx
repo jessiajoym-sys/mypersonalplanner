@@ -79,9 +79,8 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="text-xs font-bold text-gray-400 uppercase tracking-wide block mb-2">Language</label>
-              <select className="sel w-full">
+              <select className="sel w-full" value="English" disabled>
                 <option>English</option>
-                <option>Bahasa Indonesia</option>
               </select>
             </div>
           </div>

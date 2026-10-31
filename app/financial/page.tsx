@@ -186,6 +186,7 @@ export default function FinancialPlanner() {
   const [accounts, setAccounts] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [budgets, setBudgets] = useState<any[]>([])
+  const [businesses, setBusinesses] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
   const [selectedMonth, setSelectedMonth] = useState(new Date())
@@ -237,6 +238,7 @@ export default function FinancialPlanner() {
     category: 'Food',
     merchant: '',
     description: '',
+    business_id: '',
     transaction_date: localDateString()
   })
 
@@ -270,7 +272,8 @@ export default function FinancialPlanner() {
         { data: txs, error: transactionsError },
         { data: bdgs, error: budgetsError },
         { data: fixedRows, error: fixedError },
-        { data: goalRows, error: goalsError }
+        { data: goalRows, error: goalsError },
+        { data: businessRows }
       ] = await Promise.all([
         supabase.from('accounts')
           .select('*')
@@ -288,7 +291,8 @@ export default function FinancialPlanner() {
           .eq('budget_month', budgetMonth)
           .is('deleted_at', null),
         supabase.from('financial_fixed_expenses').select('*').eq('user_id', u.id).eq('is_active', true).order('due_day'),
-        supabase.from('financial_goals').select('*').eq('user_id', u.id).eq('is_active', true).order('target_date')
+        supabase.from('financial_goals').select('*').eq('user_id', u.id).eq('is_active', true).order('target_date'),
+        supabase.from('businesses').select('id,name').eq('user_id', u.id).eq('status', 'active').order('name')
       ])
 
       const queryError = accountsError || transactionsError || budgetsError || fixedError || goalsError
@@ -299,6 +303,7 @@ export default function FinancialPlanner() {
       setBudgets(bdgs || [])
       setFixedExpenses(fixedRows || [])
       setGoals(goalRows || [])
+      setBusinesses(businessRows || [])
       return true
     } catch (error: any) {
       setToast('Could not load data: ' + (error?.message || 'Check your connection and database settings.'))
@@ -309,7 +314,7 @@ export default function FinancialPlanner() {
   }
 
   async function readStatementPdf() {
-    if (!statementFiles.length) { setToast('Pilih satu atau beberapa file PDF statement terlebih dahulu.'); return }
+    if (!statementFiles.length) { setToast('Choose one or more PDF statements first.'); return }
     const oversized = statementFiles.filter(file => file.size > 25 * 1024 * 1024)
     if (oversized.length) { setToast('Ukuran maksimal tiap PDF 25 MB. Terlalu besar: ' + oversized.map(file => file.name).join(', ')); return }
     setStatementBusy(true)
@@ -597,6 +602,7 @@ export default function FinancialPlanner() {
         category: txForm.category.trim(),
         merchant: txForm.merchant.trim() || null,
         description: txForm.description.trim() || null,
+        business_id: txForm.business_id || null,
         transaction_date: txForm.transaction_date,
         source: 'manual',
         receipt_path: uploadedPath || null
@@ -615,6 +621,7 @@ export default function FinancialPlanner() {
         category: 'Food',
         merchant: '',
         description: '',
+        business_id: '',
         transaction_date: localDateString()
       })
       setShowAddTx(false)
@@ -938,6 +945,24 @@ export default function FinancialPlanner() {
     ...budgets.map(budget => budget.currency),
   ]))
 
+  function exportMonthlyReport() {
+    const columns = ['Date', 'Type', 'Description', 'Category', 'Account', 'Business', 'Currency', 'Amount']
+    const rows = transactions.filter(tx => tx.transaction_date?.startsWith(thisMonth)).map(tx => [
+      tx.transaction_date, transactionLabel(tx.type), tx.merchant || tx.description || '', tx.category || '',
+      accounts.find(account => account.id === tx.from_account_id)?.name || '',
+      businesses.find(business => business.id === tx.business_id)?.name || (tx.business_id ? String(tx.business_id) : 'Personal'),
+      tx.currency, String(tx.amount ?? 0),
+    ])
+    const csv = [columns, ...rows].map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n')
+    const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `financial-report-${thisMonth}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
   const spending: any = {}
   transactions.forEach(tx => {
     const sourceAccount = accounts.find(account => account.id === tx.from_account_id)
@@ -1003,7 +1028,7 @@ export default function FinancialPlanner() {
 
       {/* Toast */}
       {toast && (
-        <div className={`mb-4 p-3 rounded-lg text-sm flex items-center justify-between ${(toast.toLowerCase().includes('gagal') || toast.toLowerCase().includes('failed') || toast.toLowerCase().includes('error')) ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+        <div className={`mb-4 p-3 rounded-lg text-sm flex items-center justify-between ${(toast.toLowerCase().includes('failed') || toast.toLowerCase().includes('error') || toast.toLowerCase().includes('could not')) ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
           <span>{toast}</span>
           <button onClick={() => setToast(null)} className="text-green-500"><X size={16} /></button>
         </div>
@@ -1266,10 +1291,16 @@ export default function FinancialPlanner() {
                   <input type="text" className="inp text-sm" placeholder="Merchant / income source"
                     value={txForm.merchant} onChange={e => setTxForm({ ...txForm, merchant: e.target.value })} />
                 </div>
+                <label className="block text-xs font-semibold text-gray-600">Business (optional)
+                  <select className="sel w-full text-sm mt-1" value={txForm.business_id} onChange={e => setTxForm({ ...txForm, business_id: e.target.value })}>
+                    <option value="">Personal / not business-related</option>
+                    {businesses.map(business => <option key={business.id} value={business.id}>{business.name}</option>)}
+                  </select>
+                </label>
                 <input type="text" className="inp w-full text-sm" placeholder="Note (optional)"
                   value={txForm.description} onChange={e => setTxForm({ ...txForm, description: e.target.value })} />
                 <button type="button" onClick={() => receiptInputRef.current?.click()} className="btn-gray btn-sm flex items-center gap-1">
-                  <FileText size={15} /> {receiptFile ? receiptFile.name : 'Lampirkan nota'}
+                  <FileText size={15} /> {receiptFile ? receiptFile.name : 'Attach receipt'}
                 </button>
                 <input type="date" className="sel w-full text-sm" value={txForm.transaction_date}
                   onChange={e => setTxForm({ ...txForm, transaction_date: e.target.value })} />
@@ -1448,7 +1479,7 @@ export default function FinancialPlanner() {
 
       {tab === 'reports' && (
         <div className="space-y-4">
-          <div className="card p-5"><h2 className="font-bold text-lg">Monthly Reports</h2><p className="text-sm text-gray-500">Income and spending summary for the selected month.</p></div>
+          <div className="card p-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-lg">Monthly Reports</h2><p className="text-sm text-gray-500">Income and spending summary for the selected month.</p></div><button onClick={exportMonthlyReport} className="btn-gray btn-sm">Export for Excel (CSV)</button></div>
           {summaryCurrencies.map(currency => {
             const periodRows = transactions.filter(tx => tx.currency === currency && tx.transaction_date?.startsWith(thisMonth))
             const income = periodRows.filter(tx => tx.type === 'income').reduce((sum, tx) => sum + Number(tx.amount), 0)
