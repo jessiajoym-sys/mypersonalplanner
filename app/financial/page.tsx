@@ -3,6 +3,9 @@ import { useState, useEffect, useRef } from 'react'
 import type { ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Plus, Trash2, X, Eye, EyeOff, Camera, Upload, FileText, Pencil } from 'lucide-react'
+import TransactionSheet from '@/components/finance/TransactionSheet'
+import BudgetPlanner, { BudgetSummary } from '@/components/finance/BudgetCard'
+import { monthStart, isSpend, fmt } from '@/lib/finance'
 
 function localDateString(date = new Date()) {
   const year = date.getFullYear()
@@ -187,6 +190,8 @@ export default function FinancialPlanner() {
   const [transactions, setTransactions] = useState<any[]>([])
   const [budgets, setBudgets] = useState<any[]>([])
   const [businesses, setBusinesses] = useState<any[]>([])
+  const [plans, setPlans] = useState<any[]>([])
+  const [projectList, setProjectList] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
   const [selectedMonth, setSelectedMonth] = useState(new Date())
@@ -304,6 +309,13 @@ export default function FinancialPlanner() {
       setFixedExpenses(fixedRows || [])
       setGoals(goalRows || [])
       setBusinesses(businessRows || [])
+      // optional tables (upgrade 4 / 5): ignore errors so the page still works before the SQL is run
+      const [pl, pr] = await Promise.all([
+        supabase.from('budget_plans').select('*').eq('user_id', u.id).eq('budget_month', budgetMonth),
+        supabase.from('projects').select('id,name').eq('user_id', u.id).order('name'),
+      ])
+      setPlans(pl.error ? [] : pl.data || [])
+      setProjectList(pr.error ? [] : pr.data || [])
       return true
     } catch (error: any) {
       setToast('Could not load data: ' + (error?.message || 'Check your connection and database settings.'))
@@ -1036,7 +1048,7 @@ export default function FinancialPlanner() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 rounded-2xl bg-white p-2 overflow-x-auto">
-        {['overview', 'accounts', 'transactions', 'budgets', 'rmb', 'ccm', 'fixed', 'goals', 'reports'].map(t => (
+        {['overview', 'accounts', 'transactions', 'budgets', 'rmb', 'ccm', 'fixed', 'goals'].map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -1044,7 +1056,7 @@ export default function FinancialPlanner() {
               tab === t ? 'bg-teal-500 text-white' : 'text-gray-500 hover:bg-gray-100'
             }`}
           >
-            {t === 'overview' && '📊 Overview'}
+            {t === 'overview' && '📊 Overview & Reports'}
             {t === 'accounts' && '💳 Accounts'}
             {t === 'transactions' && '📋 Transactions'}
             {t === 'budgets' && '🎯 Budget'}
@@ -1052,14 +1064,19 @@ export default function FinancialPlanner() {
             {t === 'ccm' && '💳 CCM Manager'}
             {t === 'fixed' && '🔁 Fixed'}
             {t === 'goals' && '🌟 Goals'}
-            {t === 'reports' && '📈 Reports'}
-          </button>
+                      </button>
         ))}
       </div>
 
       {/* DASHBOARD TAB */}
       {tab === 'overview' && (
         <div className="space-y-6">
+          {(budgets.length > 0 || plans.length > 0) && (
+            <div className="card p-5">
+              <div className="flex items-center justify-between mb-3"><h2 className="font-bold">🎯 This month’s budget</h2><button className="text-xs text-teal-600 font-semibold" onClick={() => setTab('budgets')}>Manage →</button></div>
+              <BudgetSummary txs={transactions} budgets={budgets} plans={plans} month={selectedMonth} />
+            </div>
+          )}
           {/* Balances */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {balances.map(b => (
@@ -1314,103 +1331,15 @@ export default function FinancialPlanner() {
             </div>
           )}
 
-          <div className="space-y-2">
-            {transactions.length === 0 && <div className="card p-6 text-center text-sm text-gray-500">No transactions yet. Select “Add Transaction” to get started.</div>}
-            {transactions.map(tx => (
-                <div key={tx.id} className="card p-4 flex items-center justify-between gap-3 hover:bg-gray-50">
-                <div className="flex-1">
-                  <div className="font-semibold text-sm">{tx.merchant || tx.category || tx.description}</div>
-                  <div className="text-xs text-gray-500">{tx.transaction_date} • {transactionLabel(tx.type)}</div>
-                </div>
-                <div className={`font-bold text-sm mr-4 ${
-                  tx.type === 'income' ? 'text-green-600' : tx.type === 'transfer' ? 'text-blue-600' : 'text-red-500'
-                }`}>
-                  {tx.type === 'income' ? '+' : tx.type === 'transfer' ? '↔ ' : '−'}{formatMoney(tx.amount, tx.currency)}
-                </div>
-                {tx.receipt_path && <button onClick={() => openReceipt(tx.receipt_path)} className="btn-gray btn-sm">View receipt</button>}
-                <button onClick={() => startEditTransaction(tx)} aria-label="Edit transaction name" title="Edit name or note" className="text-gray-400 hover:text-blue-600"><Pencil size={16}/></button>
-                <button onClick={() => deleteTransaction(tx.id)} className="text-gray-400 hover:text-red-500">
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
-          </div>
+          <TransactionSheet transactions={transactions} accounts={accounts} businesses={businesses} projects={projectList} categories={FINANCE_CATEGORIES}
+            userId={user?.id || ''} month={thisMonth} onChanged={load} onToast={setToast} openReceipt={openReceipt} />
         </div>
       )}
 
       {/* BUDGETS TAB */}
-      {tab === 'budgets' && (
-        <div className="space-y-4">
-          {!showAddBudget ? (
-            <button onClick={() => setShowAddBudget(true)} className="btn-blue btn-sm flex items-center gap-1">
-              <Plus size={16} /> Set Budget
-            </button>
-          ) : (
-            <div className="card bg-blue-50">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold">Set Monthly Budget</h3>
-                <button onClick={() => setShowAddBudget(false)} className="text-gray-400"><X size={16} /></button>
-              </div>
-              <div className="space-y-3">
-                <input type="text" className="inp w-full text-sm" list="finance-category-options" placeholder="Category"
-                  value={budgetForm.category} onChange={e => setBudgetForm({ ...budgetForm, category: e.target.value })} />
-                <div className="grid grid-cols-2 gap-3">
-                  <input type="number" className="inp text-sm" placeholder="Monthly limit"
-                    value={budgetForm.monthly_limit} onChange={e => setBudgetForm({ ...budgetForm, monthly_limit: Number(e.target.value) })} />
-                  <select className="sel text-sm" value={budgetForm.currency}
-                    onChange={e => setBudgetForm({ ...budgetForm, currency: e.target.value })}>
-                    <option value="IDR">IDR</option>
-                    <option value="CNY">CNY</option>
-                    <option value="USD">USD</option>
-                  </select>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={addBudget} disabled={saving} className="btn-blue text-sm flex-1">
-                    {saving ? 'Saving…' : 'Save'}
-                  </button>
-                  <button onClick={() => setShowAddBudget(false)} className="btn-gray text-sm flex-1">Cancel</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-3">
-            {budgets.length === 0 && <div className="card p-6 text-center text-sm text-gray-500">No budgets for this month yet. Set a limit for a spending category you want to track.</div>}
-            {budgets.map(budget => {
-              const key = categoryCurrencyKey(budget.category, budget.currency)
-              const spent = spending[key] || 0
-              const limit = Number(budget.monthly_limit)
-              const percent = limit > 0 ? (spent / limit) * 100 : 0
-              const isOver = spent > limit
-              return (
-                <div key={budget.id} className="card p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="font-bold">{budget.category}</div>
-                    <button onClick={() => deleteBudget(budget.id)} className="text-gray-400 hover:text-red-500">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  <div className="mb-2">
-                    <div className="w-full bg-gray-200 rounded-full h-3">
-                      <div
-                        className={`h-3 rounded-full transition-all ${isOver ? 'bg-red-500' : 'bg-green-500'}`}
-                        style={{ width: `${Math.min(percent, 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-600">{formatMoney(spent, budget.currency)} / {formatMoney(budget.monthly_limit, budget.currency)}</span>
-                    <span className={`font-bold ${isOver ? 'text-red-500' : 'text-green-500'}`}>
-                      {percent.toFixed(0)}%
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
+      {tab === 'budgets' && user && (
+        <BudgetPlanner userId={user.id} month={selectedMonth} txs={transactions} budgets={budgets} plans={plans} categories={FINANCE_CATEGORIES} onChanged={load} onToast={setToast} />
       )}
-
 
       {tab === 'rmb' && (
         <div className="space-y-4">
@@ -1459,7 +1388,26 @@ export default function FinancialPlanner() {
             <select className="sel text-sm" value={fixedForm.currency} onChange={e => setFixedForm({ ...fixedForm, currency: e.target.value })}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select>
             <div className="flex gap-2"><input className="inp text-sm w-20" type="number" min="1" max="31" aria-label="Payment due day" value={fixedForm.due_day} onChange={e => setFixedForm({ ...fixedForm, due_day: Number(e.target.value) })} /><button onClick={addFixedExpense} disabled={saving} className="btn-blue btn-sm">Add</button></div>
           </div><p className="text-xs text-gray-400 mt-2">The last number is the due day (1–31).</p></div>
-          <div className="space-y-2">{fixedExpenses.map(item => <div key={item.id} className="card p-4 flex items-center justify-between"><div><b>{item.name}</b><div className="text-xs text-gray-500">{item.category} · due on day {item.due_day}</div></div><div className="flex items-center gap-3"><b>{formatMoney(item.amount, item.currency)}</b><button onClick={() => archiveFixedExpense(item.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button></div></div>)}{fixedExpenses.length === 0 && <div className="card p-5 text-sm text-gray-500">No recurring bills yet.</div>}</div>
+          {(() => {
+            const todayD = new Date(), ym = monthStart(todayD).slice(0, 7), dayNow = todayD.getDate()
+            const totals: Record<string, number> = {}
+            fixedExpenses.forEach(f => { totals[f.currency] = (totals[f.currency] || 0) + Number(f.amount) })
+            return <>
+              {fixedExpenses.length > 0 && <div className="card p-4 flex flex-wrap gap-x-6 gap-y-1 text-sm"><span className="text-gray-500">Total fixed per month:</span>{Object.entries(totals).map(([c, v]) => <b key={c}>{fmt(v, c)}</b>)}</div>}
+              <div className="space-y-2">{fixedExpenses.map(item => {
+                const kw = String(item.match_keyword || item.name).trim().toLowerCase()
+                const paid = transactions.find(t => isSpend(t) && t.currency === item.currency && String(t.transaction_date).startsWith(ym) && `${t.merchant || ''} ${t.description || ''}`.toLowerCase().includes(kw))
+                const late = !paid && dayNow > Number(item.due_day), soon = !paid && !late && Number(item.due_day) - dayNow <= 3
+                return <div key={item.id} className="card p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3"><div className="min-w-0"><b>{item.name}</b><div className="text-xs text-gray-500">{item.category} · due on day {item.due_day}</div></div>
+                    <div className="flex items-center gap-3"><span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${paid ? 'bg-green-100 text-green-700' : late ? 'bg-red-100 text-red-600' : soon ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>{paid ? `✓ Paid ${String(paid.transaction_date).slice(5)}` : late ? 'Overdue / not found' : soon ? 'Due soon' : 'Upcoming'}</span>
+                      <b>{formatMoney(item.amount, item.currency)}</b><button onClick={() => archiveFixedExpense(item.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button></div></div>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-400">Match e-statement lines containing
+                    <input className="inp text-xs flex-1 max-w-xs" defaultValue={item.match_keyword || ''} placeholder={item.name} onBlur={async e => { if (e.target.value.trim() === (item.match_keyword || '')) return; const { error } = await supabase.from('financial_fixed_expenses').update({ match_keyword: e.target.value.trim() || null }).eq('id', item.id).eq('user_id', user.id); setToast(error ? 'Could not save keyword: ' + error.message + ' — run lib/planner-upgrade-5.sql first.' : 'Keyword saved.'); if (!error) load() }} /></label>
+                </div>
+              })}{fixedExpenses.length === 0 && <div className="card p-5 text-sm text-gray-500">No recurring bills yet. Add insurance, mortgage, laptop instalments… they appear in your calendar and are ticked off automatically when a matching transaction (e.g. from an imported e-statement) shows up.</div>}</div>
+            </>
+          })()}
         </div>
       )}
 
@@ -1477,8 +1425,8 @@ export default function FinancialPlanner() {
         </div>
       )}
 
-      {tab === 'reports' && (
-        <div className="space-y-4">
+      {tab === 'overview' && (
+        <div className="space-y-4 mt-6">
           <div className="card p-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-lg">Monthly Reports</h2><p className="text-sm text-gray-500">Income and spending summary for the selected month.</p></div><button onClick={exportMonthlyReport} className="btn-gray btn-sm">Export for Excel (CSV)</button></div>
           {summaryCurrencies.map(currency => {
             const periodRows = transactions.filter(tx => tx.currency === currency && tx.transaction_date?.startsWith(thisMonth))

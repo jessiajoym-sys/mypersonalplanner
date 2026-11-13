@@ -1,4 +1,5 @@
 'use client'
+import { TX_COLS, fmtTotals, netTotals, totalsByCurrency } from '@/lib/finance'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { addDays, addMonths, addWeeks, differenceInCalendarDays, eachDayOfInterval, endOfMonth, endOfWeek, format, parseISO, startOfMonth, startOfWeek } from 'date-fns'
@@ -25,7 +26,7 @@ export default function SchedulePage() {
   const [mode, setMode] = useState<Mode>('week')
   const [cursor, setCursor] = useState(new Date())
   const [items, setItems] = useState<CalItem[]>([])
-  const [stats, setStats] = useState({ done: 0, total: 0, habitPct: 0, spent: 0, income: 0, received: 0, accomplished: 0 })
+  const [stats, setStats] = useState({ done: 0, total: 0, habitPct: 0, spent: {} as Record<string, number>, income: {} as Record<string, number>, received: 0, accomplished: 0 })
   const [taskForm, setTaskForm] = useState<{ date?: string; initial?: any } | null>(null)
   const [eventForm, setEventForm] = useState<{ date?: string; initial?: any } | null>(null)
 
@@ -43,7 +44,7 @@ export default function SchedulePage() {
       supabase.from('todos').select('*').eq('user_id', user.id).or(`and(scheduled_date.gte.${fromS},scheduled_date.lte.${toS}),and(deadline.gte.${fromS},deadline.lte.${toS})`),
       supabase.from('habits').select('id').eq('user_id', user.id).eq('is_active', true),
       supabase.from('habit_logs').select('id').eq('user_id', user.id).eq('completed', true).gte('date', fromS).lte('date', toS),
-      supabase.from('transactions').select('debit,kredit').eq('user_id', user.id).gte('date', fromS).lte('date', toS),
+      supabase.from('transactions').select(TX_COLS).eq('user_id', user.id).is('deleted_at', null).gte('transaction_date', fromS).lte('transaction_date', toS),
       supabase.from('daily_logs').select('type').eq('user_id', user.id).gte('date', fromS).lte('date', toS).in('type', ['task_received', 'accomplishment']),
     ])
     const [pm, pp] = await Promise.all([supabase.from('project_milestones').select('*').eq('user_id', user.id).gte('due_date', fromS).lte('due_date', toS), supabase.from('projects').select('id,name,emoji,color,status,target_date').eq('user_id', user.id)])
@@ -56,7 +57,7 @@ export default function SchedulePage() {
     setStats({
       done: real.filter(i => i.done).length, total: real.length,
       habitPct: habits ? Math.round(((hl.data || []).length / (habits * days)) * 100) : 0,
-      spent: (tx.data || []).reduce((s, r: any) => s + Number(r.debit || 0), 0), income: (tx.data || []).reduce((s, r: any) => s + Number(r.kredit || 0), 0),
+      ...(() => { const t = totalsByCurrency(tx.data || []); return { spent: t.spent, income: t.income } })(),
       received: (lg.data || []).filter((l: any) => l.type === 'task_received').length, accomplished: (lg.data || []).filter((l: any) => l.type === 'accomplishment').length,
     })
   }, [fromS, toS])  // eslint-disable-line
@@ -99,7 +100,7 @@ export default function SchedulePage() {
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4">
               {[
                 ['✅ Tasks', `${stats.done}/${stats.total}`, 'done'], ['📥 Received', String(stats.received), 'in Daily Log'], ['🏆 Accomplished', String(stats.accomplished), 'in Daily Log'],
-                ['💧 Habits', `${stats.habitPct}%`, 'completion'], ['💰 Money', money(stats.income - stats.spent), `in ${money(stats.income)} · out ${money(stats.spent)}`],
+                ['💧 Habits', `${stats.habitPct}%`, 'completion'], ['💰 Money', fmtTotals(netTotals(stats.income, stats.spent)), `in ${fmtTotals(stats.income)} · out ${fmtTotals(stats.spent)}`],
               ].map(([t, v, s]) => <div key={t} className="bg-gray-50 rounded-xl px-3 py-2.5"><div className="text-[10px] font-bold text-gray-400 uppercase">{t}</div><div className="text-lg font-bold">{v}</div><div className="text-[10px] text-gray-400 truncate">{s}</div></div>)}
             </div>
           </div>

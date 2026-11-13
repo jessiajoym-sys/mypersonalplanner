@@ -155,3 +155,26 @@ export function milestoneItems(milestones: any[], projects: any[], from: string,
   }
   return out
 }
+
+/** Recurring bills (financial_fixed_expenses) and loan/instalment due dates as calendar items. */
+export function billItems(fixed: any[], loans: any[], from: string, to: string): CalItem[] {
+  const out: CalItem[] = []
+  const f = new Date(from + 'T00:00:00'), t = new Date(to + 'T00:00:00')
+  const pad = (n: number) => String(n).padStart(2, '0')
+  for (let y = f.getFullYear(), m = f.getMonth(); y < t.getFullYear() || (y === t.getFullYear() && m <= t.getMonth()); m++) {
+    if (m > 11) { m = 0; y++ }
+    const last = new Date(y, m + 1, 0).getDate()
+    for (const b of fixed) {
+      const d = `${y}-${pad(m + 1)}-${pad(Math.min(Number(b.due_day) || 1, last))}`
+      if (d >= from && d <= to) out.push({ key: `bill-${b.id}-${d}`, id: b.id, kind: 'milestone', title: `💸 ${b.name}`, date: d, allDay: true, color: '#14B8A6', category: 'Bills', raw: { href: '/financial', ...b } } as CalItem)
+    }
+    for (const l of loans) {
+      if (!l.next_due_date) continue
+      const day = Number(String(l.next_due_date).slice(8, 10)) || 1
+      const d = `${y}-${pad(m + 1)}-${pad(Math.min(day, last))}`
+      if (d >= from && d <= to && d >= l.next_due_date) out.push({ key: `loan-${l.id}-${d}`, id: l.id, kind: 'milestone', title: `🏦 ${l.name}`, date: d, allDay: true, color: '#14B8A6', category: 'Bills', raw: { href: '/financial/loans', ...l } } as CalItem)
+    }
+    if (m === 11 && y >= t.getFullYear()) break
+  }
+  return out
+}

@@ -68,11 +68,11 @@ export async function loadProjectData(supabase: any, userId: string) {
     supabase.from('project_milestones').select('*').eq('user_id', userId).order('sort_order').order('due_date'),
     supabase.from('project_expenses').select('*').eq('user_id', userId).order('date', { ascending: false }),
     supabase.from('todos').select('*').eq('user_id', userId),
-    supabase.from('transactions').select('id,date,description,debit,kredit,project_id').eq('user_id', userId).not('project_id', 'is', null),
+    supabase.from('transactions').select('id,type,amount,currency,category,merchant,description,transaction_date,project_id').eq('user_id', userId).is('deleted_at', null).not('project_id', 'is', null),
   ])
   return { projects: pr.error ? null : pr.data || [], milestones: ms.data || [], expenses: ex.data || [], todos: td.data || [], txs: tx.error ? [] : tx.data || [], error: pr.error?.message }
 }
 export const spentOf = (id: string, expenses: any[], txs: any[]) =>
-  expenses.filter(e => e.project_id === id && e.type !== 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id).reduce((s, t) => s + Number(t.debit || 0), 0)
+  expenses.filter(e => e.project_id === id && e.type !== 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id && ['expense', 'credit_card_purchase', 'fee'].includes(t.type)).reduce((s, t) => s + Number(t.amount || 0), 0)
 export const incomeOf = (id: string, expenses: any[], txs: any[]) =>
-  expenses.filter(e => e.project_id === id && e.type === 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id).reduce((s, t) => s + Number(t.kredit || 0), 0)
+  expenses.filter(e => e.project_id === id && e.type === 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id && t.type === 'income').reduce((s, t) => s + Number(t.amount || 0), 0)

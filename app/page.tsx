@@ -10,6 +10,9 @@ import SmartCalendar from '@/components/planner/SmartCalendar'
 import TaskForm from '@/components/planner/TaskForm'
 import { CardHeader } from '@/components/planner/Modal'
 import { computeStats, kindOf, pace, scheduledOn } from '@/lib/habits'
+import { BudgetSummary } from '@/components/finance/BudgetCard'
+import { monthStart } from '@/lib/finance'
+import { TX_COLS, fmt, fmtTotals, netTotals, totalsByCurrency } from '@/lib/finance'
 import { HEALTH_STYLE, loadProjectData, projectHealth, spentOf, tasksOfProject } from '@/lib/projects'
 import { RatesCard, WeatherCard, WorldClocks } from '@/components/planner/GlanceWidgets'
 
@@ -27,6 +30,8 @@ export default function Dashboard() {
   const [pdata, setPdata] = useState<any>(null)
   const [tx, setTx] = useState<any[]>([])
   const [monthTx, setMonthTx] = useState<any[]>([])
+  const [budgets, setBudgets] = useState<any[]>([])
+  const [plans, setPlans] = useState<any[]>([])
   const [taskForm, setTaskForm] = useState<{ initial?: any; defaults?: any } | null>(null)
   const today = todayStr()
 
@@ -41,11 +46,17 @@ export default function Dashboard() {
       supabase.from('calendar_categories').select('*').eq('user_id', user.id),
       supabase.from('habits').select('*').eq('user_id', user.id).eq('is_active', true).order('created_at'),
       supabase.from('habit_logs').select('*').eq('user_id', user.id).gte('date', d14),
-      supabase.from('transactions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
-      supabase.from('transactions').select('debit,kredit,date').eq('user_id', user.id).gte('date', ymd(startOfMonth(new Date()))),
+      supabase.from('transactions').select(TX_COLS).eq('user_id', user.id).is('deleted_at', null).order('transaction_date', { ascending: false }).order('created_at', { ascending: false }).limit(4),
+      supabase.from('transactions').select(TX_COLS).eq('user_id', user.id).is('deleted_at', null).gte('transaction_date', ymd(startOfMonth(new Date()))),
       supabase.from('progress_goals').select('*').eq('user_id', user.id).eq('archived', false),
     ])
     setGoals(gl.error ? [] : gl.data || [])
+    const ms = monthStart(new Date())
+    const [bg, bp] = await Promise.all([
+      supabase.from('budgets').select('*').eq('user_id', user.id).eq('budget_month', ms).is('deleted_at', null),
+      supabase.from('budget_plans').select('*').eq('user_id', user.id).eq('budget_month', ms),
+    ])
+    setBudgets(bg.error ? [] : bg.data || []); setPlans(bp.error ? [] : bp.data || [])
     setPdata(await loadProjectData(supabase, user.id))
     if (p.data) setProfile(p.data)
     setTodos(t.data || []); setEvents(e.data || []); setCats(c.data || [])
@@ -89,7 +100,7 @@ export default function Dashboard() {
     const days = Array.from({ length: 14 }, (_, i) => ymd(subDays(new Date(), 13 - i)))
     const doneBy = days.map(d => todos.filter(t => t.status === 'done' && t.completed_at && ymd(new Date(t.completed_at)) === d).length)
     const habitBy = computeStats(habits, habitLogs, days).daily.map(d => Math.round(d.pct))
-    const income = monthTx.reduce((s, r) => s + Number(r.kredit || 0), 0), spent = monthTx.reduce((s, r) => s + Number(r.debit || 0), 0)
+    const { income, spent } = totalsByCurrency(monthTx)
     return { days, doneBy, habitBy, income, spent }
   }, [todos, habits, habitLogs, monthTx])
 
@@ -227,19 +238,26 @@ export default function Dashboard() {
           <div><div className="text-[11px] font-bold text-gray-500 mb-1.5">Habits done / day (%) <span className="text-gray-300 font-normal">· avg {Math.round(stats.habitBy.reduce((a, b) => a + b, 0) / 14)}%</span></div><Bars values={stats.habitBy} color="#22C55E" max={100} /></div>
           <div>
             <div className="text-[11px] font-bold text-gray-500 mb-1.5">Money this month</div>
-            <div className="flex justify-between text-xs"><span className="text-gray-400">In</span><span className="font-bold text-green-600">{money(stats.income)}</span></div>
-            <div className="flex justify-between text-xs mt-1"><span className="text-gray-400">Out</span><span className="font-bold text-red-500">{money(stats.spent)}</span></div>
-            <div className="flex justify-between text-xs mt-1 pt-1 border-t border-gray-100"><span className="text-gray-400">Net</span><span className="font-bold">{money(stats.income - stats.spent)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-gray-400">In</span><span className="font-bold text-green-600">{fmtTotals(stats.income)}</span></div>
+            <div className="flex justify-between text-xs mt-1"><span className="text-gray-400">Out</span><span className="font-bold text-red-500">{fmtTotals(stats.spent)}</span></div>
+            <div className="flex justify-between text-xs mt-1 pt-1 border-t border-gray-100"><span className="text-gray-400">Net</span><span className="font-bold">{fmtTotals(netTotals(stats.income, stats.spent))}</span></div>
           </div>
         </div>
       </div>
+
+      {(budgets.length > 0 || plans.length > 0) && (
+        <div className="card mb-4">
+          <CardHeader icon="🎯" title="Budget — This Month" tone="teal" hint="What is left to spend, and today’s daily caps." right={<Link href="/financial" className="text-xs text-teal-600 font-semibold">Manage →</Link>} />
+          <div className="p-4"><BudgetSummary txs={monthTx} budgets={budgets} plans={plans} /></div>
+        </div>
+      )}
 
       {tx.length > 0 && (
         <div className="card">
           <CardHeader icon="💰" title="Financial — Recent" tone="teal" hint="Your latest transactions." right={<Link href="/financial" className="text-xs text-teal-600 font-semibold">View all →</Link>} />
           <div className="divide-y divide-gray-50">{tx.map(t => (
-            <div key={t.id} className="flex items-center gap-3 px-4 py-3"><div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{t.description}</div><div className="text-xs text-gray-400">{t.date} · {t.category}</div></div>
-              <span className={`text-sm font-bold ${t.kredit ? 'text-green-500' : 'text-red-500'}`}>{t.kredit ? `+${money(t.kredit)}` : `-${money(t.debit || 0)}`}</span></div>))}</div>
+            <div key={t.id} className="flex items-center gap-3 px-4 py-3"><div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{t.merchant || t.description || t.category}</div><div className="text-xs text-gray-400">{t.transaction_date} · {t.category}</div></div>
+              <span className={`text-sm font-bold ${t.type === 'income' ? 'text-green-500' : t.type === 'transfer' ? 'text-gray-500' : 'text-red-500'}`}>{t.type === 'income' ? '+' : t.type === 'transfer' ? '' : '-'}{fmt(Number(t.amount), t.currency)}</span></div>))}</div>
         </div>
       )}
 

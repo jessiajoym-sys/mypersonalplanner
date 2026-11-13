@@ -45,3 +45,10 @@ What changed: all tasks/errands now live in one table (`todos`). Main Dashboard,
 2. Deploy as usual.
 
 New: Daily Habits (separate Habits / Medicine / Vitamins with times of day, stats for 7 days → year, Progress Goals such as Bible pericopes). Projects Dashboard + a page per project (overview & health check, tasks, milestones, budget, risks & review, activity). Milestones show on the Calendar.
+
+## Upgrade 5 — Finance
+1. Run `lib/planner-upgrade-5.sql` in Supabase > SQL Editor (choose "Run and enable RLS" if asked).
+2. Upload the new files to GitHub; Vercel redeploys.
+What's new: fixed transaction totals on Dashboard/Schedule/Projects, Excel-like Transactions sheet (inline edit, filters, bulk tags, CSV),
+Budget planner (total → categories → daily caps, shown on Dashboard), Overview + Reports merged, bills ticked off automatically and shown in the Calendar,
+e-statement attachments on Loans and Investments.
