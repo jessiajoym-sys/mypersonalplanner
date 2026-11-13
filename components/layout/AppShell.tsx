@@ -11,6 +11,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
   const [user, setUser] = useState<any>(null)
   const [profile, setProfile] = useState<any>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const pathname = usePathname()
   const router = useRouter()
   const isPublic = PUBLIC_ROUTES.includes(pathname)
@@ -55,9 +56,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar user={user} profile={profile} />
+      <button aria-label="Menu" onClick={() => setMenuOpen(o => !o)} className="md:hidden fixed top-3 left-3 z-[55] w-10 h-10 rounded-xl bg-white shadow border border-gray-100 text-lg" style={{ marginTop: 'env(safe-area-inset-top)' }}>{menuOpen ? '✕' : '☰'}</button>
+      {menuOpen && <div className="md:hidden fixed inset-0 bg-black/30 z-40" onClick={() => setMenuOpen(false)} />}
+      <div onClick={() => setMenuOpen(false)}><Sidebar user={user} profile={profile} open={menuOpen} /></div>
       <AlertWatcher />
-      <main className="ml-[210px] flex-1 p-5 pb-16 min-h-screen">
+      <main className="md:ml-[210px] flex-1 min-w-0 p-3 pt-16 md:pt-5 md:p-5 pb-16 min-h-screen">
         {children}
       </main>
     </div>

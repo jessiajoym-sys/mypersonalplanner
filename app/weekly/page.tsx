@@ -112,7 +112,7 @@ export default function SchedulePage() {
                     <div className={`text-xs font-bold ${hol ? 'text-pink-500' : 'text-gray-600'}`}>{format(d, 'EEE, MMM d')}</div>
                     <button onClick={() => setTaskForm({ date: ds })} aria-label="Add task" className="text-blue-500 text-sm font-bold">＋</button>
                   </div>
-                  {hol && <div className="text-[10px] text-pink-500 mb-1">🎌 {hol.title}</div>}
+                  {list.filter(i => i.kind === 'holiday').map(h => <div key={h.key} className="text-[10px] font-semibold mb-1" style={{ color: h.color }}>{h.title}</div>)}
                   {list.filter(i => i.kind !== 'holiday').map(i => {
                     const canCheck = i.kind === 'task' || i.kind === 'errand' || i.kind === 'deadline'
                     return (

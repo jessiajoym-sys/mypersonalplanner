@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { addDays, addMonths, addWeeks, addYears, eachDayOfInterval, endOfMonth, endOfWeek, endOfYear, format, isSameMonth, parseISO, startOfMonth, startOfWeek, startOfYear, isToday } from 'date-fns'
 import { ymd, onChange, toggleTask } from '@/lib/planner'
-import { CalItem, KIND_COLOR, KIND_ICON, KIND_LABEL, expandEvent, fetchHolidays, holidayItems, sortItems, taskItems } from '@/lib/calendar'
+import { CalItem, COUNTRY_STYLE, KIND_COLOR, KIND_ICON, KIND_LABEL, expandEvent, fetchHolidays, holidayItems, sortItems, taskItems } from '@/lib/calendar'
 import EventForm from './EventForm'
 import TaskForm from './TaskForm'
+import CycleModal from './CycleModal'
+import { analyze, cycleDayMap } from '@/lib/cycle'
 
 type View = 'month' | 'week' | 'day' | 'year'
 const WEEK = { weekStartsOn: 1 as const }
@@ -31,6 +33,9 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
   const [eventForm, setEventForm] = useState<{ initial?: any; date?: string } | null>(null)
   const [taskForm, setTaskForm] = useState<{ initial?: any; date?: string } | null>(null)
   const [showFilters, setShowFilters] = useState(false)
+  const [cycles, setCycles] = useState<any[]>([])
+  const [showCycle, setShowCycle] = useState(false)
+  const [hideCycle, setHideCycle] = useState(false)
 
   const { from, to } = useMemo(() => rangeFor(view, cursor), [view, cursor])
   const fromS = ymd(from), toS = ymd(to)
@@ -48,6 +53,9 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
       supabase.from('businesses').select('id,name,emoji').eq('user_id', user.id),
     ])
     setEvents(ev.data || []); setTodos(td.data || []); setBusinesses(biz.data || [])
+    const cy = await supabase.from('cycle_logs').select('*').eq('user_id', user.id)
+    setCycles(cy.error ? [] : cy.data || [])
+    try { setHideCycle(localStorage.getItem('cycle-hide') === '1') } catch {}
   }, [fromS, toS])
 
   useEffect(() => { load() }, [load])
@@ -83,6 +91,9 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
     })
   }, [allItems, filters])
 
+  const cycleMap = useMemo(() => hideCycle || !cycles.length ? {} : cycleDayMap(cycles, analyze(cycles)), [cycles, hideCycle])
+  const Flower = ({ ds }: { ds: string }) => cycleMap[ds] ? <span aria-hidden className={`absolute top-0.5 right-1 text-[10px] leading-none ${cycleMap[ds] === 'predicted' ? 'opacity-40' : ''}`}>🌸</span> : null
+
   const byDate = useMemo(() => {
     const m: Record<string, CalItem[]> = {}
     items.forEach(i => { (m[i.date] ||= []).push(i) })
@@ -113,9 +124,10 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
     const rest = list.filter(i => i.kind !== 'holiday')
     return (
       <div onClick={() => pick(ds)} onDoubleClick={() => { setCursor(d); setView('day') }}
-        className={`min-h-[78px] p-1 rounded-xl cursor-pointer border transition-all hover:bg-gray-50 ${isToday(d) ? 'border-blue-400 bg-blue-50/60' : selected === ds ? 'border-blue-300 bg-blue-50/30' : 'border-transparent'}`}>
-        <div className={`text-[11px] font-bold mb-0.5 text-center ${hol ? 'text-pink-500' : isToday(d) ? 'text-blue-500' : isSameMonth(d, cursor) ? 'text-gray-700' : 'text-gray-300'}`}>{format(d, 'd')}</div>
-        {hol && <div className="text-[9px] text-pink-500 truncate text-center leading-tight mb-0.5" title={hol.title}>🎌 {hol.title}</div>}
+        className={`relative min-h-[78px] p-1 rounded-xl cursor-pointer border transition-all hover:bg-gray-50 ${isToday(d) ? 'border-blue-400 bg-blue-50/60' : selected === ds ? 'border-blue-300 bg-blue-50/30' : 'border-transparent'}`}>
+        <Flower ds={ds} />
+        <div className={`text-[11px] font-bold mb-0.5 text-center ${hol ? 'text-red-500' : isToday(d) ? 'text-blue-500' : isSameMonth(d, cursor) ? 'text-gray-700' : 'text-gray-300'}`}>{format(d, 'd')}</div>
+        {list.filter(i => i.kind === 'holiday').map(h => <div key={h.key} className="text-[9px] font-semibold truncate leading-tight mb-0.5 px-1 rounded" style={{ color: h.color, background: h.color + '15' }} title={h.title}>{h.title}</div>)}
         {rest.slice(0, 3).map(i => <Chip key={i.key} i={i} compact />)}
         {rest.length > 3 && <div className="text-[9px] text-gray-400 text-center">+{rest.length - 3} more</div>}
       </div>
@@ -142,6 +154,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
             </div>
             <button onClick={() => setEventForm({ date: selected })} className="btn-blue btn-sm">+ Event</button>
             <button onClick={() => setTaskForm({ date: selected })} className="btn-gray btn-sm">+ Task</button>
+            <button onClick={() => setShowCycle(true)} aria-label="Private tracker" title="Private" className="btn-gray btn-sm">🌸</button>
           </div>
         </div>
         <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
@@ -149,7 +162,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
           {filters.length > 0 && <button onClick={() => setFilters([])} className="text-[11px] text-blue-500 font-semibold">Show everything</button>}
           <span className="flex-1" />
           {COUNTRIES.map(c => <button key={c.c} onClick={() => toggleCountry(c.c)} title={`Public holidays: ${c.l}`}
-            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${countries.includes(c.c) ? 'bg-pink-50 text-pink-600 border-pink-200' : 'bg-white text-gray-300 border-gray-200'}`}>🎌 {c.c}</button>)}
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${countries.includes(c.c) ? 'bg-white' : 'bg-white text-gray-300 border-gray-200 opacity-60'}`} style={countries.includes(c.c) ? { color: COUNTRY_STYLE[c.c].color, borderColor: COUNTRY_STYLE[c.c].color } : {}}>{COUNTRY_STYLE[c.c].flag} {c.l}</button>)}
         </div>
         {showFilters && (
           <div className="flex flex-wrap gap-1.5 mt-2">
@@ -178,7 +191,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
               const ds = ymd(d); const list = byDate[ds] || []
               return (
                 <div key={ds} onClick={() => pick(ds)} className={`rounded-xl border p-2 min-h-[140px] cursor-pointer ${isToday(d) ? 'border-blue-400 bg-blue-50/50' : selected === ds ? 'border-blue-300' : 'border-gray-100'}`}>
-                  <div className="text-[11px] font-bold text-gray-500 mb-1.5">{format(d, 'EEE d')}</div>
+                  <div className="text-[11px] font-bold text-gray-500 mb-1.5 flex justify-between">{format(d, 'EEE d')}{cycleMap[ds] && <span aria-hidden className={cycleMap[ds] === 'predicted' ? 'opacity-40' : ''}>🌸</span>}</div>
                   {list.length === 0 && <div className="text-[10px] text-gray-300">—</div>}
                   {list.map(i => <Chip key={i.key} i={i} />)}
                 </div>
@@ -228,6 +241,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
         </div>
       )}
 
+      {showCycle && <CycleModal onClose={() => { setShowCycle(false); load() }} />}
       {eventForm && <EventForm initial={eventForm.initial} defaultDate={eventForm.date} onClose={() => setEventForm(null)} onSaved={load} />}
       {taskForm && <TaskForm initial={taskForm.initial} defaults={taskForm.date ? { scheduled_date: taskForm.date } : undefined} onClose={() => setTaskForm(null)} onSaved={load} />}
     </div>

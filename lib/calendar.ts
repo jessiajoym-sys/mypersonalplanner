@@ -24,6 +24,10 @@ export type CalItem = {
 export const KIND_LABEL: Record<CalKind, string> = { event: 'Events', task: 'Tasks', errand: 'Errands', deadline: 'Deadlines', holiday: 'Holidays' }
 export const KIND_ICON: Record<CalKind, string> = { event: '📅', task: '✓', errand: '🛒', deadline: '⏰', holiday: '🎌' }
 export const KIND_COLOR: Record<CalKind, string> = { event: '#5B7FFF', task: '#8B5CF6', errand: '#F59E0B', deadline: '#EF4444', holiday: '#EC4899' }
+export const COUNTRY_STYLE: Record<string, { flag: string; color: string; name: string }> = {
+  ID: { flag: '🇮🇩', color: '#DC2626', name: 'Indonesia' },
+  CN: { flag: '🇨🇳', color: '#D97706', name: 'China' },
+}
 
 const MAX_SPAN_DAYS = 62
 
@@ -102,8 +106,8 @@ export function taskItems(todos: any[], from: string, to: string): CalItem[] {
 
 export function holidayItems(holidays: { date: string; name: string; country: string }[], from: string, to: string): CalItem[] {
   return holidays.filter(h => h.date >= from && h.date <= to).map(h => ({
-    key: `h-${h.country}-${h.date}-${h.name}`, id: `${h.country}-${h.date}`, kind: 'holiday' as CalKind, title: h.name, date: h.date, allDay: true,
-    color: KIND_COLOR.holiday, category: `Holiday ${h.country}`,
+    key: `h-${h.country}-${h.date}-${h.name}`, id: `${h.country}-${h.date}`, kind: 'holiday' as CalKind, title: `${COUNTRY_STYLE[h.country]?.flag || '🎌'} ${h.name} (${h.country})`, date: h.date, allDay: true,
+    color: COUNTRY_STYLE[h.country]?.color || KIND_COLOR.holiday, category: `Holiday ${h.country}`,
   }))
 }
 

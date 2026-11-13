@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
-type SidebarProps = { user: any; profile: any }
+type SidebarProps = { user: any; profile: any; open?: boolean }
 type NavEntry = { href: string; icon: string; label: string }
 
 const groups: { key: string; title: string; entries: NavEntry[] }[] = [
@@ -34,7 +34,7 @@ const groups: { key: string; title: string; entries: NavEntry[] }[] = [
   ] },
 ]
 
-export default function Sidebar({ user, profile }: SidebarProps) {
+export default function Sidebar({ user, profile, open }: SidebarProps) {
   const path = usePathname()
   const [businesses, setBusinesses] = useState<any[]>([])
   const [notifications, setNotifications] = useState<any[]>([])
@@ -78,7 +78,7 @@ export default function Sidebar({ user, profile }: SidebarProps) {
   const name = profile?.name || user?.email?.split('@')[0] || 'User'
 
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-[210px] bg-white border-r border-gray-100 flex flex-col py-4 px-2.5 overflow-y-auto z-50">
+    <aside className={`fixed left-0 top-0 bottom-0 w-[210px] bg-white border-r border-gray-100 flex flex-col py-4 px-2.5 overflow-y-auto z-50 transition-transform md:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`} style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
       <div className="flex items-center justify-between px-2 pb-4">
         <Link href="/" className="flex items-center gap-2 font-bold text-[15px]"><span>✨</span><span>myPlanner</span></Link>
         <div className="relative">

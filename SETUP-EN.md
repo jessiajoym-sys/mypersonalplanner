@@ -27,3 +27,12 @@ Existing rows remain in place. Historical transactions are not automatically ass
 3. Open the app and allow browser notifications when asked (needed for alert banners).
 
 What changed: all tasks/errands now live in one table (`todos`). Main Dashboard, Tasks & To-Do, Calendar, Schedule, Master's Degree and Daily Log all read/write it, so adding, ticking or editing in one place updates the rest. Ticking a task keeps it visible (✓) and logs it in Daily Log; un-ticking removes the log entry.
+
+---
+
+# Upgrade 3 (fixes, cycle tracker, phone install)
+
+1. Supabase → SQL Editor → run `lib/planner-upgrade-3.sql` once (fixes the `end_date` error, adds the private cycle tracker).
+2. Deploy as usual.
+3. **Install on your phone (iPhone):** open the site in **Safari** → Share button → **Add to Home Screen** → Add. It opens full-screen like an app, with its own icon.
+   **Android:** Chrome → ⋮ menu → **Install app**.

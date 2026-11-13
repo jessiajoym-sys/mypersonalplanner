@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { formatDistanceStrict } from 'date-fns'
 import { addDays, addMonths, addWeeks, addYears, eachDayOfInterval, endOfMonth, endOfWeek, endOfYear, format, parseISO, startOfMonth, startOfWeek, startOfYear } from 'date-fns'
 import { LOG_LABELS, addLog, onChange, toggleTask, todayStr, ymd } from '@/lib/planner'
 import Modal, { CardHeader, Field } from '@/components/planner/Modal'
@@ -22,6 +23,7 @@ export default function DailyLogPage() {
   const [todos, setTodos] = useState<Record<string, any>>({})
   const [habitInfo, setHabitInfo] = useState<{ done: any[]; total: number }>({ done: [], total: 0 })
   const [loading, setLoading] = useState(true)
+  const [bizNames, setBizNames] = useState<Record<string, string>>({})
   const [labelFilter, setLabelFilter] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[] | null>(null)
@@ -45,6 +47,8 @@ export default function DailyLogPage() {
     setLogs(rows)
     const ids = Array.from(new Set(rows.map((r: any) => r.todo_id).filter(Boolean)))
     if (ids.length) { const { data: t } = await supabase.from('todos').select('*').in('id', ids.slice(0, 300)); setTodos(Object.fromEntries((t || []).map((x: any) => [x.id, x]))) } else setTodos({})
+    const { data: biz } = await supabase.from('businesses').select('id,name,emoji').eq('user_id', user.id)
+    setBizNames(Object.fromEntries((biz || []).map((b: any) => [String(b.id), `${b.emoji || ''} ${b.name}`.trim()])))
     if (period === 'day') {
       const [h, hl] = await Promise.all([
         supabase.from('habits').select('id,name,icon').eq('user_id', user.id).eq('is_active', true),
@@ -65,6 +69,8 @@ export default function DailyLogPage() {
       const { data: { user } } = await supabase.auth.getUser(); if (!user) return
       const { data } = await supabase.from('daily_logs').select('*').eq('user_id', user.id).ilike('content', `%${query.trim()}%`).order('date', { ascending: false }).limit(200)
       setResults(data || [])
+      const ids = Array.from(new Set((data || []).map((r: any) => r.todo_id).filter(Boolean))) as string[]
+      if (ids.length) { const { data: t } = await supabase.from('todos').select('*').in('id', ids.slice(0, 200)); setTodos(prev => ({ ...prev, ...Object.fromEntries((t || []).map((x: any) => [x.id, x])) })) }
     }, 300)
     return () => clearTimeout(t)
   }, [query])
@@ -85,6 +91,16 @@ export default function DailyLogPage() {
   }
   async function del(id: string) { if (!confirm('Delete this log entry?')) return; await supabase.from('daily_logs').delete().eq('id', id); load() }
 
+  const stamp = (iso: string) => format(new Date(iso), 'MMM d, HH:mm')
+  const detail = (l: any) => {
+    const t = l.todo_id ? todos[l.todo_id] : null
+    if (l.type === 'work_log' && !l.todo_id) return { source: 'Written by you', chips: [] as string[], line: '' }
+    if (!t) return { source: l.todo_id ? 'From a task that no longer exists' : 'Added by you', chips: [], line: '' }
+    const chips = [t.task_type === 'errand' ? '🛒 Errand' : '✅ Task', `📁 ${t.category}`, ...(t.tags || []).map((x: string) => `＋${x}`), ...(t.business_id && bizNames[String(t.business_id)] ? [bizNames[String(t.business_id)]] : []), ...(t.priority === 'high' ? ['🔴 High priority'] : []), ...(t.repeat_type && t.repeat_type !== 'never' ? ['🔄 ' + t.repeat_type] : [])]
+    const rec = t.created_at ? `Received ${stamp(t.created_at)}` : ''
+    const done = t.status === 'done' && t.completed_at ? `Completed ${stamp(t.completed_at)} (took ${formatDistanceStrict(new Date(t.created_at), new Date(t.completed_at))})` : `Not done yet${t.deadline ? ' · due ' + t.deadline : ''}`
+    return { source: `From ${t.task_type === 'errand' ? 'errand' : 'task'}: “${t.title}”`, chips, line: [rec, done].filter(Boolean).join('  →  ') }
+  }
   const isDoneTodo = (l: any) => l.todo_id && todos[l.todo_id]?.status === 'done'
 
   const Entry = ({ l, showKind, showDate }: { l: any; showKind?: boolean; showDate?: boolean }) => (
@@ -94,7 +110,13 @@ export default function DailyLogPage() {
         : <span className="mt-1.5 w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: colorOf(l.label || l.category) }} />}
       <div className="flex-1 min-w-0">
         <div className={`text-[13px] ${l.type === 'task_received' && isDoneTodo(l) ? 'line-through text-gray-400' : ''}`}>{l.content}</div>
-        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[10px] text-gray-400">
+        {(() => { const d = detail(l); return (
+          <div className="mt-1 text-[10px] text-gray-500 space-y-0.5">
+            <div className="text-gray-400">{d.source}</div>
+            {d.chips.length > 0 && <div className="flex flex-wrap gap-1">{d.chips.map((c, i) => <span key={i} className="bg-gray-100 text-gray-600 font-semibold px-1.5 py-0.5 rounded-full">{c}</span>)}</div>}
+            {d.line && <div className="font-semibold text-gray-600">{d.line}</div>}
+          </div>) })()}
+        <div className="flex items-center gap-1.5 mt-1 flex-wrap text-[10px] text-gray-400">
           {showDate && <span className="font-semibold text-gray-500">{format(parseISO(l.date), 'EEE, MMM d yyyy')}</span>}
           {l.time_logged && <span>{l.time_logged}</span>}
           <span className="font-bold px-1.5 py-0.5 rounded-full text-white" style={{ background: colorOf(l.label || l.category) }}>{l.label || l.category || 'General'}</span>
