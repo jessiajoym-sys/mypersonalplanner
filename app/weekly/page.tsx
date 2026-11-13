@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { addDays, addMonths, addWeeks, differenceInCalendarDays, eachDayOfInterval, endOfMonth, endOfWeek, format, parseISO, startOfMonth, startOfWeek } from 'date-fns'
 import { onChange, toggleTask, todayStr, ymd } from '@/lib/planner'
-import { CalItem, KIND_ICON, expandEvent, fetchHolidays, holidayItems, sortItems, taskItems } from '@/lib/calendar'
+import { CalItem, KIND_ICON, expandEvent, fetchHolidays, holidayItems, milestoneItems, sortItems, taskItems } from '@/lib/calendar'
 import SmartCalendar from '@/components/planner/SmartCalendar'
 import TaskForm from '@/components/planner/TaskForm'
 import EventForm from '@/components/planner/EventForm'
@@ -46,8 +46,9 @@ export default function SchedulePage() {
       supabase.from('transactions').select('debit,kredit').eq('user_id', user.id).gte('date', fromS).lte('date', toS),
       supabase.from('daily_logs').select('type').eq('user_id', user.id).gte('date', fromS).lte('date', toS).in('type', ['task_received', 'accomplishment']),
     ])
+    const [pm, pp] = await Promise.all([supabase.from('project_milestones').select('*').eq('user_id', user.id).gte('due_date', fromS).lte('due_date', toS), supabase.from('projects').select('id,name,emoji,color,status,target_date').eq('user_id', user.id)])
     const hol = await fetchHolidays(range.from.getFullYear(), ['ID', 'CN'])
-    const all = [...(ev.data || []).flatMap(e => expandEvent(e, fromS, toS)), ...taskItems(td.data || [], fromS, toS), ...holidayItems(hol, fromS, toS)]
+    const all = [...(ev.data || []).flatMap(e => expandEvent(e, fromS, toS)), ...taskItems(td.data || [], fromS, toS), ...holidayItems(hol, fromS, toS), ...milestoneItems(pm.error ? [] : pm.data || [], pp.error ? [] : pp.data || [], fromS, toS)]
     setItems(all)
     const real = all.filter(i => i.kind === 'task' || i.kind === 'errand')
     const days = differenceInCalendarDays(range.to, range.from) + 1

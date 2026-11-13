@@ -36,3 +36,12 @@ What changed: all tasks/errands now live in one table (`todos`). Main Dashboard,
 2. Deploy as usual.
 3. **Install on your phone (iPhone):** open the site in **Safari** → Share button → **Add to Home Screen** → Add. It opens full-screen like an app, with its own icon.
    **Android:** Chrome → ⋮ menu → **Install app**.
+
+---
+
+# Upgrade 4 (Daily Habits + Project Management)
+
+1. Supabase → SQL Editor → run `lib/planner-upgrade-4.sql` once.
+2. Deploy as usual.
+
+New: Daily Habits (separate Habits / Medicine / Vitamins with times of day, stats for 7 days → year, Progress Goals such as Bible pericopes). Projects Dashboard + a page per project (overview & health check, tasks, milestones, budget, risks & review, activity). Milestones show on the Calendar.

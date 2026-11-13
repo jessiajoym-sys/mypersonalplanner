@@ -37,6 +37,7 @@ const groups: { key: string; title: string; entries: NavEntry[] }[] = [
 export default function Sidebar({ user, profile, open }: SidebarProps) {
   const path = usePathname()
   const [businesses, setBusinesses] = useState<any[]>([])
+  const [projects, setProjects] = useState<any[]>([])
   const [notifications, setNotifications] = useState<any[]>([])
   const [showNotif, setShowNotif] = useState(false)
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ planner: true, growth: true, projects: true, business: true, finance: true })
@@ -45,6 +46,10 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
     if (!user) return
     void loadBusinesses()
     void loadNotifications()
+    void loadProjects()
+    const h = () => void loadProjects()
+    window.addEventListener('planner:changed', h)
+    return () => window.removeEventListener('planner:changed', h)
   }, [user])
 
   async function loadBusinesses() {
@@ -54,6 +59,11 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
       { id: 'chishee', name: 'Chishee Blanket', emoji: '🧣' }, { id: 'homemate', name: 'Homemate', emoji: '🏠' },
       { id: 'jastip', name: 'China Shopping Service', emoji: '✈️' },
     ])
+  }
+
+  async function loadProjects() {
+    const { data } = await supabase.from('projects').select('id,name,emoji,status').eq('user_id', user.id).neq('status', 'done').order('created_at')
+    setProjects(data || [])
   }
 
   async function loadNotifications() {
@@ -93,7 +103,7 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
         {businesses.map(biz => navItem({ href: `/business/${biz.id}`, icon: biz.emoji || '💼', label: biz.name }))}
         {navItem({ href: '/business/new', icon: '＋', label: 'Add Business' })}
       </>)}
-      {section('projects', groups[2].title, groups[2].entries.map(navItem))}
+      {section('projects', groups[2].title, <>{groups[2].entries.map(navItem)}{projects.map(pr => navItem({ href: `/projects/${pr.id}`, icon: pr.emoji || '📁', label: pr.name }))}</>)}
       {section('finance', groups[3].title, groups[3].entries.map(navItem))}
 
       <div className="mt-auto pt-3 border-t border-gray-100">

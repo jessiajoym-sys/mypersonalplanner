@@ -28,7 +28,8 @@ export default function TaskForm({ onClose, onSaved, initial, defaults }: Props)
     (async () => {
       setBusinesses(await loadBusinesses())
       const { data } = await supabase.from('todos').select('category')
-      const extra = Array.from(new Set((data || []).map((r: any) => r.category).filter(Boolean))) as string[]
+      const pr = await supabase.from('projects').select('name').neq('status', 'done')
+      const extra = Array.from(new Set([...(data || []).map((r: any) => r.category), ...(pr.error ? [] : (pr.data || []).map((r: any) => r.name))].filter(Boolean))) as string[]
       setProjects(prev => Array.from(new Set([...prev, ...extra])))
     })()
   }, [])

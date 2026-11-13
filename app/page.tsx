@@ -9,6 +9,8 @@ import { expandEvent } from '@/lib/calendar'
 import SmartCalendar from '@/components/planner/SmartCalendar'
 import TaskForm from '@/components/planner/TaskForm'
 import { CardHeader } from '@/components/planner/Modal'
+import { computeStats, kindOf, pace, scheduledOn } from '@/lib/habits'
+import { HEALTH_STYLE, loadProjectData, projectHealth, spentOf, tasksOfProject } from '@/lib/projects'
 import { RatesCard, WeatherCard, WorldClocks } from '@/components/planner/GlanceWidgets'
 
 const money = (n: number) => 'Rp ' + Math.round(n).toLocaleString('en-US')
@@ -21,6 +23,8 @@ export default function Dashboard() {
   const [habits, setHabits] = useState<any[]>([])
   const [habitLogs, setHabitLogs] = useState<any[]>([])
   const [recentLogs, setRecentLogs] = useState<any[]>([])
+  const [goals, setGoals] = useState<any[]>([])
+  const [pdata, setPdata] = useState<any>(null)
   const [tx, setTx] = useState<any[]>([])
   const [monthTx, setMonthTx] = useState<any[]>([])
   const [taskForm, setTaskForm] = useState<{ initial?: any; defaults?: any } | null>(null)
@@ -30,7 +34,7 @@ export default function Dashboard() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
     const d14 = ymd(subDays(new Date(), 13))
-    const [p, t, e, c, h, hl, tr, mt] = await Promise.all([
+    const [p, t, e, c, h, hl, tr, mt, gl] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', user.id).single(),
       supabase.from('todos').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
       supabase.from('events').select('*').eq('user_id', user.id),
@@ -39,7 +43,10 @@ export default function Dashboard() {
       supabase.from('habit_logs').select('*').eq('user_id', user.id).gte('date', d14),
       supabase.from('transactions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
       supabase.from('transactions').select('debit,kredit,date').eq('user_id', user.id).gte('date', ymd(startOfMonth(new Date()))),
+      supabase.from('progress_goals').select('*').eq('user_id', user.id).eq('archived', false),
     ])
+    setGoals(gl.error ? [] : gl.data || [])
+    setPdata(await loadProjectData(supabase, user.id))
     if (p.data) setProfile(p.data)
     setTodos(t.data || []); setEvents(e.data || []); setCats(c.data || [])
     setHabits(h.data || []); setHabitLogs(hl.data || []); setTx(tr.data || []); setMonthTx(mt.data || [])
@@ -81,7 +88,7 @@ export default function Dashboard() {
   const stats = useMemo(() => {
     const days = Array.from({ length: 14 }, (_, i) => ymd(subDays(new Date(), 13 - i)))
     const doneBy = days.map(d => todos.filter(t => t.status === 'done' && t.completed_at && ymd(new Date(t.completed_at)) === d).length)
-    const habitBy = days.map(d => habits.length ? Math.round(habitLogs.filter(l => l.date === d && l.completed).length / habits.length * 100) : 0)
+    const habitBy = computeStats(habits, habitLogs, days).daily.map(d => Math.round(d.pct))
     const income = monthTx.reduce((s, r) => s + Number(r.kredit || 0), 0), spent = monthTx.reduce((s, r) => s + Number(r.debit || 0), 0)
     return { days, doneBy, habitBy, income, spent }
   }, [todos, habits, habitLogs, monthTx])
@@ -90,7 +97,11 @@ export default function Dashboard() {
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
   const countStatus = (s: string) => todos.filter(t => t.status === s || (s === 'todo' && t.status === 'pending')).length
-  const habitsDone = habits.filter(h => habitLogs.some(l => l.habit_id === h.id && l.date === today && l.completed)).length
+  const todayHabits = habits.filter(h => kindOf(h) === 'habit' && scheduledOn(h, today))
+  const supp = habits.filter(h => kindOf(h) !== 'habit' && scheduledOn(h, today))
+  const isHDone = (h: any) => habitLogs.some(l => l.habit_id === h.id && l.date === today && l.completed)
+  const habitsDone = todayHabits.filter(isHDone).length
+  const suppDone = supp.filter(isHDone).length
 
   const TaskRow = ({ t }: { t: any }) => {
     const done = t.status === 'done'
@@ -176,13 +187,15 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div className="card">
           <CardHeader icon="💧" title="Daily Habits" tone="green" hint="Small things you want to repeat every day. Tap to tick for today." right={<Link href="/habit" className="text-xs text-green-600 font-semibold">Manage →</Link>} />
-          {habits.length === 0 ? <div className="p-4 text-center text-gray-400 text-xs">No habits yet. <Link href="/habit" className="text-blue-500 font-semibold">Add habits →</Link></div> : <>
-            {habits.map(h => { const done = habitLogs.some(l => l.habit_id === h.id && l.date === today && l.completed); return (
+          {todayHabits.length === 0 ? <div className="p-4 text-center text-gray-400 text-xs">No habits scheduled today. <Link href="/habit" className="text-blue-500 font-semibold">Add habits →</Link></div> : <>
+            {todayHabits.map(h => { const done = habitLogs.some(l => l.habit_id === h.id && l.date === today && l.completed); return (
               <div key={h.id} onClick={() => toggleHabit(h.id)} className={`flex items-center gap-3 px-4 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${done ? 'bg-green-50/30' : ''}`}>
                 <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center text-[10px] ${done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-200'}`}>{done && '✓'}</div>
                 <span className="text-base">{h.icon}</span><span className={`flex-1 text-xs ${done ? 'line-through text-gray-400' : ''}`}>{h.name}</span>
               </div>) })}
-            <div className="px-4 py-2.5 bg-gray-50 flex justify-between text-xs text-gray-400"><span>Today's progress</span><span className="font-bold text-green-600">{habitsDone}/{habits.length}</span></div>
+            <div className="px-4 py-2.5 bg-gray-50 flex justify-between text-xs text-gray-400"><span>Habits today</span><span className="font-bold text-green-600">{habitsDone}/{todayHabits.length}</span></div>
+            {supp.length > 0 && <Link href="/habit" className="px-4 py-2.5 border-t border-gray-100 flex justify-between text-xs hover:bg-gray-50"><span>💊 Medicine & vitamins today</span><span className="font-bold text-amber-600">{suppDone}/{supp.length}</span></Link>}
+            {goals.slice(0, 2).map(g => { const p = pace(g); return <Link href="/habit" key={g.id} className="block px-4 py-2.5 border-t border-gray-100 hover:bg-gray-50"><div className="flex justify-between text-xs"><span>{g.icon} {g.title}</span><span className="font-bold">{Number(g.current_count)}/{Number(g.target_total)}</span></div><div className="h-1.5 bg-gray-100 rounded-full mt-1.5 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${Math.min(100, p.pct)}%`, background: p.diff < -0.5 ? '#F97316' : '#8B5CF6' }} /></div></Link> })}
           </>}
         </div>
         <div className="card">
@@ -193,6 +206,18 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* PROJECTS */}
+      {pdata?.projects && pdata.projects.filter((p: any) => p.status !== 'done').length > 0 && (
+        <div className="card mb-4">
+          <CardHeader icon="🚀" title="Projects" tone="purple" hint="Your active projects and whether they are on track." right={<Link href="/projects" className="text-xs text-purple-600 font-semibold">Open →</Link>} />
+          <div className="divide-y divide-gray-50">
+            {pdata.projects.filter((p: any) => p.status !== 'done').slice(0, 5).map((p: any) => {
+              const h = projectHealth(p, tasksOfProject(pdata.todos, p.name), pdata.milestones.filter((m: any) => m.project_id === p.id), spentOf(p.id, pdata.expenses, pdata.txs), today)
+              return <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50"><span className="text-lg">{p.emoji}</span><div className="flex-1 min-w-0"><div className="text-sm font-semibold truncate">{p.name}</div><div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${h.progress}%`, background: p.color }} /></div></div><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${HEALTH_STYLE[h.level]}`}>{h.label}</span><b className="text-xs w-9 text-right">{Math.round(h.progress)}%</b></Link>
+            })}
+          </div>
+        </div>)}
 
       {/* STATS */}
       <div className="card mb-4">

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { addDays, addMonths, addWeeks, addYears, eachDayOfInterval, endOfMonth, endOfWeek, endOfYear, format, isSameMonth, parseISO, startOfMonth, startOfWeek, startOfYear, isToday } from 'date-fns'
 import { ymd, onChange, toggleTask } from '@/lib/planner'
-import { CalItem, COUNTRY_STYLE, KIND_COLOR, KIND_ICON, KIND_LABEL, expandEvent, fetchHolidays, holidayItems, sortItems, taskItems } from '@/lib/calendar'
+import { CalItem, COUNTRY_STYLE, KIND_COLOR, KIND_ICON, KIND_LABEL, expandEvent, fetchHolidays, holidayItems, milestoneItems, sortItems, taskItems } from '@/lib/calendar'
 import EventForm from './EventForm'
 import TaskForm from './TaskForm'
 import CycleModal from './CycleModal'
@@ -33,6 +33,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
   const [eventForm, setEventForm] = useState<{ initial?: any; date?: string } | null>(null)
   const [taskForm, setTaskForm] = useState<{ initial?: any; date?: string } | null>(null)
   const [showFilters, setShowFilters] = useState(false)
+  const [projData, setProjData] = useState<{ ms: any[]; pr: any[] }>({ ms: [], pr: [] })
   const [cycles, setCycles] = useState<any[]>([])
   const [showCycle, setShowCycle] = useState(false)
   const [hideCycle, setHideCycle] = useState(false)
@@ -53,6 +54,11 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
       supabase.from('businesses').select('id,name,emoji').eq('user_id', user.id),
     ])
     setEvents(ev.data || []); setTodos(td.data || []); setBusinesses(biz.data || [])
+    const [pm, pp] = await Promise.all([
+      supabase.from('project_milestones').select('*').eq('user_id', user.id).gte('due_date', fromS).lte('due_date', toS),
+      supabase.from('projects').select('id,name,emoji,color,status,target_date').eq('user_id', user.id),
+    ])
+    setProjData({ ms: pm.error ? [] : pm.data || [], pr: pp.error ? [] : pp.data || [] })
     const cy = await supabase.from('cycle_logs').select('*').eq('user_id', user.id)
     setCycles(cy.error ? [] : cy.data || [])
     try { setHideCycle(localStorage.getItem('cycle-hide') === '1') } catch {}
@@ -69,7 +75,8 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
     ...events.flatMap(e => expandEvent(e, fromS, toS)),
     ...taskItems(todos, fromS, toS),
     ...holidayItems(holidays, fromS, toS),
-  ], [events, todos, holidays, fromS, toS])
+    ...milestoneItems(projData.ms, projData.pr, fromS, toS),
+  ], [events, todos, holidays, projData, fromS, toS])
 
   // filter chips are built from what actually exists in view
   const chips = useMemo(() => {
@@ -107,6 +114,7 @@ export default function SmartCalendar({ defaultView = 'month', className = '', o
 
   const clickItem = (i: CalItem) => {
     if (i.kind === 'event') setEventForm({ initial: i.raw })
+    else if (i.kind === 'milestone') window.location.href = `/projects/${i.raw?.project_id || i.raw?.id}`
     else if (i.kind !== 'holiday') setTaskForm({ initial: i.raw })
   }
 

@@ -1,7 +1,7 @@
 import { addDays, addMonths, addWeeks, addYears, differenceInCalendarDays, differenceInCalendarMonths, differenceInCalendarWeeks, differenceInCalendarYears, parseISO, isAfter, isBefore } from 'date-fns'
 import { ymd, isDone } from './planner'
 
-export type CalKind = 'event' | 'task' | 'errand' | 'deadline' | 'holiday'
+export type CalKind = 'event' | 'task' | 'errand' | 'deadline' | 'holiday' | 'milestone'
 export type CalItem = {
   key: string
   id: string            // id of the source row (event/todo)
@@ -21,9 +21,9 @@ export type CalItem = {
   raw?: any
 }
 
-export const KIND_LABEL: Record<CalKind, string> = { event: 'Events', task: 'Tasks', errand: 'Errands', deadline: 'Deadlines', holiday: 'Holidays' }
-export const KIND_ICON: Record<CalKind, string> = { event: '📅', task: '✓', errand: '🛒', deadline: '⏰', holiday: '🎌' }
-export const KIND_COLOR: Record<CalKind, string> = { event: '#5B7FFF', task: '#8B5CF6', errand: '#F59E0B', deadline: '#EF4444', holiday: '#EC4899' }
+export const KIND_LABEL: Record<CalKind, string> = { event: 'Events', task: 'Tasks', errand: 'Errands', deadline: 'Deadlines', holiday: 'Holidays', milestone: 'Milestones' }
+export const KIND_ICON: Record<CalKind, string> = { event: '📅', task: '✓', errand: '🛒', deadline: '⏰', holiday: '🎌', milestone: '🏁' }
+export const KIND_COLOR: Record<CalKind, string> = { event: '#5B7FFF', task: '#8B5CF6', errand: '#F59E0B', deadline: '#EF4444', holiday: '#EC4899', milestone: '#0EA5E9' }
 export const COUNTRY_STYLE: Record<string, { flag: string; color: string; name: string }> = {
   ID: { flag: '🇮🇩', color: '#DC2626', name: 'Indonesia' },
   CN: { flag: '🇨🇳', color: '#D97706', name: 'China' },
@@ -138,5 +138,20 @@ export async function fetchHolidays(year: number, countries: string[]): Promise<
       out.push(...list)
     } catch {}
   }))
+  return out
+}
+
+/** Project milestones and project target dates as calendar items. */
+export function milestoneItems(milestones: any[], projects: any[], from: string, to: string): CalItem[] {
+  const byId = Object.fromEntries(projects.map(p => [p.id, p]))
+  const out: CalItem[] = []
+  for (const m of milestones) {
+    const p = byId[m.project_id]; if (!m.due_date || m.due_date < from || m.due_date > to) continue
+    out.push({ key: `m-${m.id}`, id: m.id, kind: 'milestone', title: `${p?.emoji || '🏁'} ${p?.name || 'Project'}: ${m.title}`, date: m.due_date, allDay: true, color: p?.color || KIND_COLOR.milestone, category: p?.name || 'Project', done: !!m.done, raw: m })
+  }
+  for (const p of projects) {
+    if (p.target_date && p.status !== 'done' && p.target_date >= from && p.target_date <= to)
+      out.push({ key: `pt-${p.id}`, id: p.id, kind: 'milestone', title: `${p.emoji || '🎯'} ${p.name}: target date`, date: p.target_date, allDay: true, color: p.color || KIND_COLOR.milestone, category: p.name, raw: p })
+  }
   return out
 }
