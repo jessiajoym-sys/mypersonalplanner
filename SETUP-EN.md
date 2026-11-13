@@ -52,3 +52,9 @@ New: Daily Habits (separate Habits / Medicine / Vitamins with times of day, stat
 What's new: fixed transaction totals on Dashboard/Schedule/Projects, Excel-like Transactions sheet (inline edit, filters, bulk tags, CSV),
 Budget planner (total → categories → daily caps, shown on Dashboard), Overview + Reports merged, bills ticked off automatically and shown in the Calendar,
 e-statement attachments on Loans and Investments.
+
+## Upgrade 6 — Business
+1. Run `lib/planner-upgrade-6.sql` in Supabase > SQL Editor (choose "Run and enable RLS" if asked).
+2. Upload the new files to GitHub. IMPORTANT: delete the old folders `app/business/sambal`, `polar`, `chishee`, `homemate`, `jastip` (they are replaced by one page that works for every business).
+What's new: per-business workspace (Overview, Ledger, Sales & Ads, Receivable/Payable, Inventory, Reports, Plans, Marketing, Tasks & Projects, Settings)
+and a combined Business Dashboard.

@@ -54,11 +54,7 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
 
   async function loadBusinesses() {
     const { data } = await supabase.from('businesses').select('*').eq('user_id', user.id).eq('status', 'active').order('sort_order')
-    setBusinesses(data || [
-      { id: 'sambal', name: 'Sambal Mak Tak', emoji: '🌶️' }, { id: 'polar', name: 'Polar Bed', emoji: '🛏️' },
-      { id: 'chishee', name: 'Chishee Blanket', emoji: '🧣' }, { id: 'homemate', name: 'Homemate', emoji: '🏠' },
-      { id: 'jastip', name: 'China Shopping Service', emoji: '✈️' },
-    ])
+    setBusinesses(data || [])
   }
 
   async function loadProjects() {
