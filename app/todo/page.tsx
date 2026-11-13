@@ -3,23 +3,9 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { format } from 'date-fns'
 import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
-
-const DEFAULT_PROJECTS = [
-  { name: 'School', color: '#5B7FFF', dot: 'bg-blue-500' },
-  { name: 'Content', color: '#22C55E', dot: 'bg-green-500' },
-  { name: 'Business', color: '#F97316', dot: 'bg-orange-500' },
-  { name: 'Personal', color: '#FF6B8A', dot: 'bg-pink-500' },
-  { name: 'Finance', color: '#14B8A6', dot: 'bg-teal-500' },
-]
-
-const STATUS_OPTIONS = [
-  { val: 'todo', label: 'To Do', cls: 'bg-gray-100 text-gray-500' },
-  { val: 'inprogress', label: 'In Progress', cls: 'bg-blue-50 text-blue-500' },
-  { val: 'done', label: 'Done', cls: 'bg-green-50 text-green-600' },
-  { val: 'blocked', label: 'Blocked', cls: 'bg-red-50 text-red-500' },
-]
-
-const REPEAT_OPTIONS = ['never', 'daily', 'weekly', 'monthly', 'yearly']
+import { DEFAULT_PROJECTS, STATUS_OPTIONS, REPEAT_OPTIONS, createTask, setTaskStatus, deleteTask as deleteTaskLib, updateTask, onChange, todayStr } from '@/lib/planner'
+import TaskForm from '@/components/planner/TaskForm'
+import SmartCalendar from '@/components/planner/SmartCalendar'
 
 export default function TodoPage() {
   const [todos, setTodos] = useState<any[]>([])
@@ -35,17 +21,19 @@ export default function TodoPage() {
   const [filterStatus, setFilterStatus] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
   const [search, setSearch] = useState('')
+  const [showDone, setShowDone] = useState(false)
+  const [boardBy, setBoardBy] = useState<'status' | 'project'>('status')
+  const [form, setForm] = useState<{ initial?: any; defaults?: any } | null>(null)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(); return onChange(load) }, [])
 
   async function load() {
-    setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setLoading(false); return }
     const { data } = await supabase.from('todos').select('*')
       .eq('user_id', user.id).order('created_at', { ascending: false })
     if (data) {
-      setTodos(data)
+      setTodos(data.map((t: any) => t.status === 'pending' ? { ...t, status: 'todo' } : t))
       const existingProjects = Array.from(new Set(data.map((t: any) => t.category)))
       const customProjects = existingProjects
         .filter((p: any) => p && !DEFAULT_PROJECTS.find(dp => dp.name === p))
@@ -57,46 +45,20 @@ export default function TodoPage() {
 
   async function quickAddTask(project: string) {
     if (!newTaskTitle.trim()) return
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    await supabase.from('todos').insert({
-      title: newTaskTitle,
-      category: project,
-      status: 'todo',
-      priority: 'medium',
-      repeat_type: 'never',
-      micro_list: [],
-      is_urgent: false,
-      user_id: user.id,
-    })
+    await createTask({ title: newTaskTitle, category: project, scheduled_date: todayStr() })
     setNewTaskTitle('')
     setAddingToProject(null)
-    load()
   }
 
   async function updateField(id: string, field: string, value: any) {
-    await supabase.from('todos').update({ [field]: value }).eq('id', id)
-    if (field === 'status' && value === 'done') {
-      const todo = todos.find(t => t.id === id)
-      const { data: { user } } = await supabase.auth.getUser()
-      if (todo && user) {
-        await supabase.from('daily_logs').insert({
-          user_id: user.id,
-          date: format(new Date(), 'yyyy-MM-dd'),
-          type: 'accomplishment',
-          category: todo.category,
-          content: todo.title,
-          time_logged: format(new Date(), 'HH:mm'),
-        })
-      }
-    }
-    load()
+    const todo = todos.find(t => t.id === id)
+    if (field === 'status' && todo) await setTaskStatus(todo, value)
+    else await updateTask(id, { [field]: value })
   }
 
   async function deleteTodo(id: string) {
     if (!confirm('Delete this task?')) return
-    await supabase.from('todos').delete().eq('id', id)
-    load()
+    await deleteTaskLib(id)
   }
 
   async function toggleMicro(todo: any, idx: number) {
@@ -138,12 +100,13 @@ export default function TodoPage() {
   }
 
   const filtered = todos.filter(t =>
+    (showDone || !!filterStatus || t.status !== 'done') &&
     (!filterStatus || t.status === filterStatus) &&
     (!filterPriority || t.priority === filterPriority) &&
     (!search || t.title.toLowerCase().includes(search.toLowerCase()))
   )
 
-  const getProjectTodos = (project: string) => filtered.filter(t => t.category === project)
+  const getProjectTodos = (project: string) => filtered.filter(t => t.category === project || (t.tags || []).includes(project))
   const getTodosByStatus = (status: string) => filtered.filter(t => t.status === status)
   const getTodosByDeadline = () => {
     const withDeadline = filtered.filter(t => t.deadline)
@@ -261,6 +224,7 @@ export default function TodoPage() {
             className="btn-blue btn-sm">
             {todo.status === 'done' ? '↩ Reopen' : '✓ Mark as Done'}
           </button>
+          <button onClick={() => setForm({ initial: todo })} className="btn-gray btn-sm">✏️ Edit all details</button>
           <button onClick={() => deleteTodo(todo.id)}
             className="btn btn-sm bg-red-50 text-red-500 border border-red-200 flex items-center gap-1 hover:bg-red-100">
             <Trash2 size={11} /> Delete
@@ -274,19 +238,17 @@ export default function TodoPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-xl font-bold">To Do List ✅</h1>
-          <p className="text-xs text-gray-400 mt-0.5">
-            {totalDone}/{totalTasks} done · Task selesai → Daily Log · Deadline → Calendar
-          </p>
+          <h1 className="text-xl font-bold">Tasks & To-Do ✅</h1>
+          <p className="text-xs text-gray-400 mt-0.5">{totalDone}/{totalTasks} done · every task you add here also appears on the Main Dashboard, Calendar and Daily Log</p>
         </div>
-        <button onClick={() => setShowNewProject(true)}
-          className="btn-gray flex items-center gap-1.5 text-xs">
-          <Plus size={12} /> Add Project
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowNewProject(true)} className="btn-gray flex items-center gap-1.5 text-xs"><Plus size={12} /> Add Project</button>
+          <button onClick={() => setForm({})} className="btn-blue flex items-center gap-1.5 text-xs"><Plus size={12} /> New Task</button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-blue-600">
-        🔗 <span>Task selesai → otomatis masuk <b>Daily Log Accomplishments</b> · Deadline → tampil di <b>Calendar</b></span>
+        🔗 <span>Ticking a task here logs it in <b>Daily Log → Accomplishments</b>. Dates & deadlines show in the <b>Calendar</b>. A task can belong to one main project and also appear in others via “Also belongs to”.</span>
       </div>
 
       {showNewProject && (
@@ -319,6 +281,7 @@ export default function TodoPage() {
         <div className="flex gap-2 flex-wrap">
           <input className="inp w-40 text-xs" placeholder="🔍 Search tasks..."
             value={search} onChange={e => setSearch(e.target.value)} />
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer px-1"><input type="checkbox" checked={showDone} onChange={e => setShowDone(e.target.checked)} /> Show done</label>
           <select className="sel text-xs" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
             <option value="">All status</option>
             {STATUS_OPTIONS.map(s => <option key={s.val} value={s.val}>{s.label}</option>)}
@@ -410,6 +373,8 @@ export default function TodoPage() {
                                 {microTotal > 0 && (
                                   <span className="text-[10px] text-gray-400">{microDone}/{microTotal} steps</span>
                                 )}
+                                {todo.category !== project.name && <span className="text-[10px] text-purple-500 font-semibold">also here · main: {todo.category}</span>}
+                                {todo.scheduled_date && <span className="text-[10px] text-gray-400">📅 {todo.scheduled_date}{todo.scheduled_time ? ' ' + todo.scheduled_time : ''}</span>}
                                 {todo.start_date && (
                                   <span className="text-[10px] text-gray-400">Start: {todo.start_date}</span>
                                 )}
@@ -475,109 +440,58 @@ export default function TodoPage() {
         </div>
 
       ) : view === 'board' ? (
-        <div className="grid grid-cols-4 gap-3">
-          {STATUS_OPTIONS.map(status => (
-            <div key={status.val} className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-                <span className={`text-xs font-bold uppercase tracking-wide ${status.cls.split(' ')[1]}`}>
-                  {status.label}
-                </span>
-                <span className={`tag text-[10px] ${status.cls}`}>{getTodosByStatus(status.val).length}</span>
-              </div>
-              <div className="p-2 min-h-[200px]">
-                {getTodosByStatus(status.val).map(todo => (
-                  <div key={todo.id}
-                    className="bg-gray-50 rounded-xl p-3 mb-2 border border-transparent hover:border-gray-200 hover:bg-white hover:shadow-sm transition-all cursor-pointer"
-                    onClick={() => updateField(todo.id, 'status',
-                      status.val === 'todo' ? 'inprogress' :
-                      status.val === 'inprogress' ? 'done' : 'todo'
-                    )}>
-                    <div className={`text-xs font-semibold mb-2 leading-tight ${todo.status === 'done' ? 'line-through text-gray-400' : ''}`}>
-                      {todo.title}
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: projects.find(p => p.name === todo.category)?.color + '20', color: projects.find(p => p.name === todo.category)?.color }}>
-                        {todo.category}
-                      </span>
-                      <PriorityDot p={todo.priority} />
-                      {todo.deadline && (
-                        <span className={`text-[10px] ${new Date(todo.deadline) < new Date() && todo.status !== 'done' ? 'text-red-500 font-semibold' : 'text-gray-400'}`}>
-                          {todo.deadline}
-                        </span>
+        <div>
+          <div className="flex gap-1 bg-white border border-gray-100 rounded-xl p-1 w-fit mb-3">
+            {[{ v: 'status', l: 'By status' }, { v: 'project', l: 'By project' }].map(o => (
+              <button key={o.v} onClick={() => setBoardBy(o.v as any)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${boardBy === o.v ? 'bg-purple-500 text-white' : 'text-gray-400 hover:bg-gray-50'}`}>{o.l}</button>
+            ))}
+          </div>
+          <div className={`grid gap-3 ${boardBy === 'status' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-flow-col auto-cols-[260px] overflow-x-auto pb-2'}`}>
+            {(boardBy === 'status' ? STATUS_OPTIONS.map(s => ({ key: s.val, label: s.label, cls: s.cls, color: '', items: getTodosByStatus(s.val) }))
+              : projects.map(pr => ({ key: pr.name, label: pr.name, cls: '', color: pr.color, items: getProjectTodos(pr.name) }))).map(col => (
+              <div key={col.key} className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100" style={col.color ? { borderTop: `3px solid ${col.color}` } : {}}>
+                  <span className={`text-xs font-bold uppercase tracking-wide ${col.cls ? col.cls.split(' ')[1] : ''}`}>{col.label}</span>
+                  <span className={`tag text-[10px] ${col.cls || 'bg-gray-100 text-gray-500'}`}>{col.items.length}</span>
+                </div>
+                <div className="p-2 min-h-[160px]">
+                  {col.items.map((todo: any) => (
+                    <div key={todo.id} className="bg-gray-50 rounded-xl p-3 mb-2 border border-transparent hover:border-gray-200 hover:bg-white hover:shadow-sm transition-all">
+                      <div className="flex items-start gap-2">
+                        <button aria-label="Toggle done" onClick={() => updateField(todo.id, 'status', todo.status === 'done' ? 'todo' : 'done')}
+                          className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center text-[9px] ${todo.status === 'done' ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 hover:border-green-400'}`}>{todo.status === 'done' && '✓'}</button>
+                        <button className={`flex-1 text-left text-xs font-semibold leading-tight ${todo.status === 'done' ? 'line-through text-gray-400' : ''}`} onClick={() => setForm({ initial: todo })}>{todo.title}</button>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                        {boardBy === 'status' && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: projects.find(p => p.name === todo.category)?.color + '20', color: projects.find(p => p.name === todo.category)?.color }}>{todo.category}</span>}
+                        {boardBy === 'project' && (
+                          <select value={todo.status} onChange={e => updateField(todo.id, 'status', e.target.value)} className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border-none outline-none cursor-pointer ${STATUS_OPTIONS.find(s => s.val === todo.status)?.cls}`}>
+                            {STATUS_OPTIONS.map(s => <option key={s.val} value={s.val}>{s.label}</option>)}
+                          </select>)}
+                        {boardBy === 'project' && todo.category !== col.key && <span className="text-[9px] text-purple-500 font-semibold">also here · main: {todo.category}</span>}
+                        <PriorityDot p={todo.priority} />
+                        {todo.deadline && <span className={`text-[10px] ${todo.deadline < todayStr() && todo.status !== 'done' ? 'text-red-500 font-semibold' : 'text-gray-400'}`}>⏰ {todo.deadline}</span>}
+                      </div>
+                      {(todo.micro_list || []).length > 0 && (
+                        <div className="mt-2"><div className="h-1 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500 rounded-full" style={{ width: `${((todo.micro_list || []).filter((m: any) => m.done).length / (todo.micro_list || []).length) * 100}%` }} /></div></div>
                       )}
                     </div>
-                    {(todo.micro_list || []).length > 0 && (
-                      <div className="mt-2">
-                        <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
-                          <div className="h-full bg-blue-500 rounded-full transition-all"
-                            style={{ width: `${((todo.micro_list || []).filter((m: any) => m.done).length / (todo.micro_list || []).length) * 100}%` }} />
-                        </div>
-                        <div className="text-[9px] text-gray-400 mt-0.5">
-                          {(todo.micro_list || []).filter((m: any) => m.done).length}/{(todo.micro_list || []).length} steps
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {getTodosByStatus(status.val).length === 0 && (
-                  <div className="text-center py-6 text-xs text-gray-300 italic">No tasks</div>
-                )}
+                  ))}
+                  {col.items.length === 0 && <div className="text-center py-6 text-xs text-gray-300 italic">No tasks</div>}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
       ) : (
         <div>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-blue-600">
-            📅 Tasks with deadlines only. Click checkbox to mark done.
-          </div>
-          <div className="card">
-            {Object.keys(getTodosByDeadline()).length === 0 ? (
-              <div className="p-10 text-center text-gray-400">
-                <div className="text-4xl mb-2">📅</div>
-                <div>No tasks with deadlines yet.</div>
-              </div>
-            ) : (
-              Object.entries(getTodosByDeadline())
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([date, tasks]) => {
-                  const isOverdue = new Date(date) < new Date()
-                  const isToday = date === format(new Date(), 'yyyy-MM-dd')
-                  return (
-                    <div key={date} className="flex gap-4 p-4 border-b border-gray-50 last:border-0 hover:bg-gray-50">
-                      <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center flex-shrink-0 font-bold
-                        ${isToday ? 'bg-blue-500 text-white' : isOverdue ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-600'}`}>
-                        <span className="text-lg leading-none">{format(new Date(date + 'T00:00:00'), 'd')}</span>
-                        <span className="text-[10px] uppercase">{format(new Date(date + 'T00:00:00'), 'MMM')}</span>
-                      </div>
-                      <div className="flex-1">
-                        {isOverdue && !isToday && <div className="text-[10px] font-bold text-red-500 mb-1">⚠️ OVERDUE</div>}
-                        {isToday && <div className="text-[10px] font-bold text-blue-500 mb-1">TODAY</div>}
-                        {tasks.map(todo => (
-                          <div key={todo.id} className="flex items-center gap-2.5 mb-1.5">
-                            <div onClick={() => updateField(todo.id, 'status', todo.status === 'done' ? 'todo' : 'done')}
-                              className={`w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center text-[9px] cursor-pointer
-                                ${todo.status === 'done' ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300'}`}>
-                              {todo.status === 'done' && '✓'}
-                            </div>
-                            <span className={`flex-1 text-sm ${todo.status === 'done' ? 'line-through text-gray-400' : ''}`}>{todo.title}</span>
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                              style={{ background: projects.find(p => p.name === todo.category)?.color + '20', color: projects.find(p => p.name === todo.category)?.color }}>
-                              {todo.category}
-                            </span>
-                            <PriorityDot p={todo.priority} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })
-            )}
-          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-blue-600">📅 This is the same calendar as on the Main Dashboard: tasks, deadlines, events, repeats and holidays. Switch between day, week, month and year.</div>
+          <SmartCalendar defaultView="month" />
         </div>
       )}
+
+      {form && <TaskForm initial={form.initial} defaults={form.defaults} onClose={() => setForm(null)} onSaved={load} />}
     </div>
   )
 }

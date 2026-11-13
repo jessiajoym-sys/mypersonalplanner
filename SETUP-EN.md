@@ -17,3 +17,13 @@ In Financial Planner, select **Reports** and choose **Export for Excel (CSV)**. 
 ## Notes
 
 Existing rows remain in place. Historical transactions are not automatically assigned to businesses; choose a business on new transactions or edit/import historical data separately. Statement imports also remain review-first so transactions can be checked before saving.
+
+---
+
+# Upgrade 2 (tasks + smart calendar + Daily Log)
+
+1. **Supabase → SQL Editor → run `lib/planner-upgrade-2.sql` once.** (Before deploying.) It only adds columns, copies your old dashboard tasks and weekly-schedule tasks into the one shared task table, and back-fills the Daily Log. Nothing is deleted. Dates in the back-fill use Asia/Shanghai time.
+2. Deploy the code as usual (GitHub → Vercel).
+3. Open the app and allow browser notifications when asked (needed for alert banners).
+
+What changed: all tasks/errands now live in one table (`todos`). Main Dashboard, Tasks & To-Do, Calendar, Schedule, Master's Degree and Daily Log all read/write it, so adding, ticking or editing in one place updates the rest. Ticking a task keeps it visible (✓) and logs it in Daily Log; un-ticking removes the log entry.

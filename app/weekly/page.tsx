@@ -1,218 +1,137 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { format, addDays, addWeeks, subWeeks } from 'date-fns'
-import { Plus, Trash2 } from 'lucide-react'
+import { addDays, addMonths, addWeeks, differenceInCalendarDays, eachDayOfInterval, endOfMonth, endOfWeek, format, parseISO, startOfMonth, startOfWeek } from 'date-fns'
+import { onChange, toggleTask, todayStr, ymd } from '@/lib/planner'
+import { CalItem, KIND_ICON, expandEvent, fetchHolidays, holidayItems, sortItems, taskItems } from '@/lib/calendar'
+import SmartCalendar from '@/components/planner/SmartCalendar'
+import TaskForm from '@/components/planner/TaskForm'
+import EventForm from '@/components/planner/EventForm'
+import { CardHeader } from '@/components/planner/Modal'
 
-const dayColors = ['border-blue-200','border-pink-200','border-green-200','border-orange-200','border-purple-200','border-teal-200','border-yellow-200']
-const dayBg = ['bg-blue-50','bg-pink-50','bg-green-50','bg-orange-50','bg-purple-50','bg-teal-50','bg-yellow-50']
-const dayText = ['text-blue-500','text-pink-500','text-green-600','text-orange-500','text-purple-600','text-teal-600','text-yellow-600']
+type Mode = 'week' | 'blocks' | 'month'
+const WEEK = { weekStartsOn: 1 as const }
+const money = (n: number) => 'Rp ' + Math.round(n).toLocaleString('en-US')
 
-const CAT_COLORS: Record<string, string> = {
-  Meeting: '#22C55E', Exam: '#5B7FFF', Deadline: '#EF4444',
-  Birthday: '#FF6B8A', Church: '#8B5CF6', Travel: '#14B8A6',
-  'Payment Due': '#F97316', Personal: '#9090A8', event: '#5B7FFF',
+/** Blocks of 7 days starting on the 1st: 1–7, 8–14, 15–21, 22–28, 29–end. */
+function blockFor(d: Date) {
+  const idx = Math.min(4, Math.floor((d.getDate() - 1) / 7))
+  const start = new Date(d.getFullYear(), d.getMonth(), idx * 7 + 1)
+  const end = idx === 4 ? endOfMonth(d) : addDays(start, 6)
+  return { start, end, idx }
 }
 
-export default function WeeklyPage() {
-  const [weekStart, setWeekStart] = useState(new Date())
-  const [tasks, setTasks] = useState<any[]>([])
-  const [showAdd, setShowAdd] = useState<string | null>(null)
-  const [input, setInput] = useState('')
-  const [time, setTime] = useState('')
-  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+export default function SchedulePage() {
+  const [mode, setMode] = useState<Mode>('week')
+  const [cursor, setCursor] = useState(new Date())
+  const [items, setItems] = useState<CalItem[]>([])
+  const [stats, setStats] = useState({ done: 0, total: 0, habitPct: 0, spent: 0, income: 0, received: 0, accomplished: 0 })
+  const [taskForm, setTaskForm] = useState<{ date?: string; initial?: any } | null>(null)
+  const [eventForm, setEventForm] = useState<{ date?: string; initial?: any } | null>(null)
 
-  useEffect(() => { load() }, [weekStart])
+  const range = useMemo(() => {
+    if (mode === 'week') return { from: startOfWeek(cursor, WEEK), to: endOfWeek(cursor, WEEK) }
+    if (mode === 'blocks') { const b = blockFor(cursor); return { from: b.start, to: b.end } }
+    return { from: startOfMonth(cursor), to: endOfMonth(cursor) }
+  }, [mode, cursor])
+  const fromS = ymd(range.from), toS = ymd(range.to)
 
-  async function load() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const startStr = format(weekStart, 'yyyy-MM-dd')
-    const endStr = format(addDays(weekStart, 6), 'yyyy-MM-dd')
-
-    const [tasksRes, eventsRes] = await Promise.all([
-      supabase.from('daily_logs').select('*')
-        .eq('user_id', user.id).eq('type', 'week_task')
-        .gte('date', startStr).lte('date', endStr),
-      supabase.from('events').select('*')
-        .eq('user_id', user.id)
-        .gte('date', startStr).lte('date', endStr)
-        .order('date'),
+  const load = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser(); if (!user) return
+    const [ev, td, hb, hl, tx, lg] = await Promise.all([
+      supabase.from('events').select('*').eq('user_id', user.id).lte('date', toS),
+      supabase.from('todos').select('*').eq('user_id', user.id).or(`and(scheduled_date.gte.${fromS},scheduled_date.lte.${toS}),and(deadline.gte.${fromS},deadline.lte.${toS})`),
+      supabase.from('habits').select('id').eq('user_id', user.id).eq('is_active', true),
+      supabase.from('habit_logs').select('id').eq('user_id', user.id).eq('completed', true).gte('date', fromS).lte('date', toS),
+      supabase.from('transactions').select('debit,kredit').eq('user_id', user.id).gte('date', fromS).lte('date', toS),
+      supabase.from('daily_logs').select('type').eq('user_id', user.id).gte('date', fromS).lte('date', toS).in('type', ['task_received', 'accomplishment']),
     ])
-
-    const manualTasks = tasksRes.data || []
-    const eventTasks = (eventsRes.data || []).map(e => ({
-      id: e.id,
-      date: e.date,
-      content: e.title,
-      time_logged: e.start_time || null,
-      category: e.category,
-      from_calendar: true,
-      category_color: e.category_color || CAT_COLORS[e.category] || '#5B7FFF',
-    }))
-
-    setTasks([...manualTasks, ...eventTasks])
-  }
-
-  async function add(date: string) {
-    if (!input.trim()) return
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    await supabase.from('daily_logs').insert({
-      date, type: 'week_task', content: input,
-      time_logged: time || null, category: 'General', user_id: user.id
+    const hol = await fetchHolidays(range.from.getFullYear(), ['ID', 'CN'])
+    const all = [...(ev.data || []).flatMap(e => expandEvent(e, fromS, toS)), ...taskItems(td.data || [], fromS, toS), ...holidayItems(hol, fromS, toS)]
+    setItems(all)
+    const real = all.filter(i => i.kind === 'task' || i.kind === 'errand')
+    const days = differenceInCalendarDays(range.to, range.from) + 1
+    const habits = (hb.data || []).length
+    setStats({
+      done: real.filter(i => i.done).length, total: real.length,
+      habitPct: habits ? Math.round(((hl.data || []).length / (habits * days)) * 100) : 0,
+      spent: (tx.data || []).reduce((s, r: any) => s + Number(r.debit || 0), 0), income: (tx.data || []).reduce((s, r: any) => s + Number(r.kredit || 0), 0),
+      received: (lg.data || []).filter((l: any) => l.type === 'task_received').length, accomplished: (lg.data || []).filter((l: any) => l.type === 'accomplishment').length,
     })
-    setInput(''); setTime(''); setShowAdd(null)
-    load()
-  }
+  }, [fromS, toS])  // eslint-disable-line
+  useEffect(() => { load() }, [load])
+  useEffect(() => onChange(load), [load])
 
-  async function toggle(t: any) {
-    if (t.from_calendar) return
-    const content = t.content.startsWith('[✓]')
-      ? t.content.replace('[✓]', '').trim()
-      : `[✓] ${t.content}`
-    await supabase.from('daily_logs').update({ content }).eq('id', t.id)
-    load()
-  }
+  const byDate = useMemo(() => { const m: Record<string, CalItem[]> = {}; items.forEach(i => (m[i.date] ||= []).push(i)); Object.keys(m).forEach(k => m[k] = sortItems(m[k])); return m }, [items])
+  const step = (dir: number) => setCursor(c => mode === 'week' ? addWeeks(c, dir) : mode === 'blocks' ? (dir > 0 ? addDays(blockFor(c).end, 1) : addDays(blockFor(c).start, -1)) : addMonths(c, dir))
+  const label = mode === 'month' ? format(cursor, 'MMMM yyyy') : `${format(range.from, 'MMM d')} – ${format(range.to, 'MMM d, yyyy')}`
 
-  async function del(id: string) {
-    await supabase.from('daily_logs').delete().eq('id', id)
-    load()
-  }
-
-  const forDay = (d: string) => tasks.filter(t => t.date === d)
-  const manualTasks = tasks.filter(t => !t.from_calendar)
-  const done = manualTasks.filter(t => t.content.startsWith('[✓]')).length
+  const open = (i: CalItem) => { if (i.kind === 'event') setEventForm({ initial: i.raw }); else if (i.kind !== 'holiday') setTaskForm({ initial: i.raw }) }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h1 className="text-xl font-bold">Weekly Schedule 📆</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Tasks + Calendar events this week</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="text-xs text-gray-400 bg-white border border-gray-100 px-3 py-1.5 rounded-full">
-            {done}/{manualTasks.length} tasks done
-          </div>
-          <div className="flex items-center gap-1.5 text-xs">
-            <div className="w-3 h-3 rounded-full bg-blue-500" />
-            <span className="text-gray-400">Calendar event</span>
-            <div className="w-3 h-3 rounded-full bg-gray-200 ml-2" />
-            <span className="text-gray-400">Your task</span>
-          </div>
-        </div>
+      <div className="mb-4">
+        <h1 className="text-xl font-bold">Schedule & Calendar 📆</h1>
+        <p className="text-xs text-gray-400 mt-0.5">One place to plan the week or month. Everything you add here is shared with the Main Dashboard, Tasks & To-Do and Daily Log.</p>
       </div>
 
-      <div className="flex items-center justify-between bg-white border border-gray-100 rounded-xl px-4 py-3 mb-4 shadow-sm">
-        <button className="btn-gray text-xs" onClick={() => setWeekStart(subWeeks(weekStart, 1))}>‹ Prev</button>
-        <div className="text-center">
-          <div className="font-bold">
-            {format(weekStart, 'MMM d')} – {format(addDays(weekStart, 6), 'MMM d, yyyy')}
-          </div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <div className="flex gap-0.5 bg-white border border-gray-100 rounded-xl p-1">
+          {([['week', 'Weekly'], ['blocks', '7-day blocks'], ['month', 'Monthly']] as [Mode, string][]).map(([m, l]) => (
+            <button key={m} onClick={() => setMode(m)} className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold ${mode === m ? 'bg-blue-500 text-white' : 'text-gray-400 hover:bg-gray-50'}`}>{l}</button>))}
         </div>
-        <div className="flex gap-2">
-          <button className="btn-blue text-xs" onClick={() => setWeekStart(new Date())}>Today</button>
-          <button className="btn-gray text-xs" onClick={() => setWeekStart(addWeeks(weekStart, 1))}>Next ›</button>
-        </div>
+        {mode !== 'month' && <>
+          <button className="btn-gray btn-sm" onClick={() => step(-1)}>‹</button>
+          <span className="text-sm font-bold">{label}{mode === 'blocks' && <span className="text-xs text-gray-400 font-normal"> · block {blockFor(cursor).idx + 1}</span>}</span>
+          <button className="btn-gray btn-sm" onClick={() => step(1)}>›</button>
+          <button className="btn-blue btn-sm" onClick={() => setCursor(new Date())}>Today</button>
+          <span className="flex-1" />
+          <button className="btn-blue btn-sm" onClick={() => setEventForm({ date: todayStr() })}>+ Event</button>
+          <button className="btn-gray btn-sm" onClick={() => setTaskForm({ date: todayStr() })}>+ Task</button>
+        </>}
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        {days.map((day, idx) => {
-          const ds = format(day, 'yyyy-MM-dd')
-          const dt = forDay(ds)
-          const isToday = ds === format(new Date(), 'yyyy-MM-dd')
-          const isLast = idx === 6
-
-          return (
-            <div key={ds} className={`card ${isLast ? 'col-span-2' : ''} ${isToday ? 'ring-2 ring-blue-400' : ''}`}>
-              <div className={`flex items-center justify-between px-4 py-3 border-b border-gray-100 rounded-t-xl ${dayBg[idx]}`}>
-                <div className="flex items-center gap-2">
-                  <div className={`w-9 h-9 rounded-xl flex flex-col items-center justify-center border ${dayColors[idx]} ${dayBg[idx]}`}>
-                    <span className={`text-base font-bold leading-none ${dayText[idx]}`}>{format(day, 'd')}</span>
-                    <span className={`text-[9px] uppercase ${dayText[idx]}`}>{format(day, 'MMM')}</span>
-                  </div>
-                  <div>
-                    <div className={`font-bold text-sm ${dayText[idx]}`}>{format(day, 'EEEE')}</div>
-                    <div className="text-[10px] text-gray-400">{format(day, 'MMMM d, yyyy')}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {isToday && <span className="tag bg-blue-500 text-white text-[10px]">TODAY</span>}
-                  <button
-                    onClick={() => setShowAdd(showAdd === ds ? null : ds)}
-                    className="w-7 h-7 rounded-lg bg-white/80 border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-blue-500 hover:text-white transition-all">
-                    <Plus size={13} />
-                  </button>
-                </div>
-              </div>
-
-              {showAdd === ds && (
-                <div className="flex gap-2 p-3 border-b border-gray-100 bg-gray-50">
-                  <input className="inp text-xs flex-1" placeholder="Add task..."
-                    value={input} onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && add(ds)} autoFocus />
-                  <input type="time" className="sel text-xs w-24" value={time} onChange={e => setTime(e.target.value)} />
-                  <button className="btn-blue text-xs" onClick={() => add(ds)}>Add</button>
-                  <button className="btn-gray text-xs" onClick={() => setShowAdd(null)}>✕</button>
-                </div>
-              )}
-
-              {dt.length === 0 ? (
-                <div
-                  className="p-4 text-center text-xs text-gray-400 italic cursor-pointer hover:bg-gray-50"
-                  onClick={() => setShowAdd(ds)}>
-                  + Add tasks for this day
-                </div>
-              ) : (
-                dt.map(t => {
-                  const isDone = t.content?.startsWith('[✓]')
-                  const isCalEvent = t.from_calendar
-                  const color = t.category_color || CAT_COLORS[t.category] || '#5B7FFF'
-
-                  return (
-                    <div key={t.id}
-                      onClick={() => !isCalEvent && toggle(t)}
-                      className={`flex items-center gap-2.5 px-4 py-2.5 border-b border-gray-100 last:border-0 group
-                        ${isCalEvent ? 'cursor-default' : 'cursor-pointer hover:bg-gray-50'}`}>
-                      {isCalEvent ? (
-                        <div className="w-4 h-4 rounded-full flex-shrink-0 flex items-center justify-center"
-                          style={{ background: color + '20', border: `2px solid ${color}` }}>
-                          <div className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
-                        </div>
-                      ) : (
-                        <div className={`w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center text-[9px] transition-all
-                          ${isDone ? 'bg-green-500 border-green-500 text-white' : 'border-gray-200 group-hover:border-green-300'}`}>
-                          {isDone && '✓'}
-                        </div>
-                      )}
-                      <span className={`flex-1 text-xs ${isDone ? 'line-through text-gray-400' : ''}`}>
-                        {t.content?.replace('[✓]', '').trim()}
-                      </span>
-                      {t.time_logged && (
-                        <span className="text-[10px] text-gray-400 flex-shrink-0">{t.time_logged}</span>
-                      )}
-                      {isCalEvent && (
-                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full text-white flex-shrink-0"
-                          style={{ background: color }}>
-                          {t.category}
-                        </span>
-                      )}
-                      {!isCalEvent && (
-                        <button
-                          onClick={e => { e.stopPropagation(); del(t.id) }}
-                          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all flex-shrink-0">
-                          <Trash2 size={11} />
-                        </button>
-                      )}
-                    </div>
-                  )
-                })
-              )}
+      {mode !== 'month' && (
+        <>
+          <div className="card mb-4">
+            <CardHeader icon="🧭" title="Summary" tone="gray" hint="Everything in this period at a glance." />
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4">
+              {[
+                ['✅ Tasks', `${stats.done}/${stats.total}`, 'done'], ['📥 Received', String(stats.received), 'in Daily Log'], ['🏆 Accomplished', String(stats.accomplished), 'in Daily Log'],
+                ['💧 Habits', `${stats.habitPct}%`, 'completion'], ['💰 Money', money(stats.income - stats.spent), `in ${money(stats.income)} · out ${money(stats.spent)}`],
+              ].map(([t, v, s]) => <div key={t} className="bg-gray-50 rounded-xl px-3 py-2.5"><div className="text-[10px] font-bold text-gray-400 uppercase">{t}</div><div className="text-lg font-bold">{v}</div><div className="text-[10px] text-gray-400 truncate">{s}</div></div>)}
             </div>
-          )
-        })}
-      </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {eachDayOfInterval({ start: range.from, end: range.to }).map(d => {
+              const ds = ymd(d); const list = byDate[ds] || []; const hol = list.find(i => i.kind === 'holiday')
+              return (
+                <div key={ds} className={`bg-white rounded-2xl border p-3 min-h-[150px] ${ds === todayStr() ? 'border-blue-400 ring-1 ring-blue-200' : 'border-gray-100'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`text-xs font-bold ${hol ? 'text-pink-500' : 'text-gray-600'}`}>{format(d, 'EEE, MMM d')}</div>
+                    <button onClick={() => setTaskForm({ date: ds })} aria-label="Add task" className="text-blue-500 text-sm font-bold">＋</button>
+                  </div>
+                  {hol && <div className="text-[10px] text-pink-500 mb-1">🎌 {hol.title}</div>}
+                  {list.filter(i => i.kind !== 'holiday').map(i => {
+                    const canCheck = i.kind === 'task' || i.kind === 'errand' || i.kind === 'deadline'
+                    return (
+                      <div key={i.key} className="flex items-center gap-1.5 py-1 border-b border-gray-50 last:border-0">
+                        {canCheck ? <button onClick={() => toggleTask(i.raw)} aria-label="Toggle done" className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 text-[8px] flex items-center justify-center ${i.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300'}`}>{i.done && '✓'}</button> : <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: i.color }} />}
+                        <button onClick={() => open(i)} className={`flex-1 text-left text-[11px] truncate ${i.done ? 'line-through text-gray-400' : ''}`}>{i.startTime && <span className="text-gray-400">{i.startTime} </span>}{KIND_ICON[i.kind]} {i.title}</button>
+                      </div>)
+                  })}
+                  {list.filter(i => i.kind !== 'holiday').length === 0 && !hol && <div className="text-[10px] text-gray-300">Free day</div>}
+                </div>)
+            })}
+          </div>
+        </>
+      )}
+
+      {mode === 'month' && <SmartCalendar defaultView="month" />}
+
+      {taskForm && <TaskForm initial={taskForm.initial} defaults={taskForm.date ? { scheduled_date: taskForm.date } : undefined} onClose={() => setTaskForm(null)} onSaved={load} />}
+      {eventForm && <EventForm initial={eventForm.initial} defaultDate={eventForm.date} onClose={() => setEventForm(null)} onSaved={load} />}
     </div>
   )
 }

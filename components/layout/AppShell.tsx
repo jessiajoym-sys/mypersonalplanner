@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Sidebar from './Sidebar'
+import AlertWatcher from '../planner/AlertWatcher'
 
 const PUBLIC_ROUTES = ['/login', '/onboarding']
 
@@ -55,6 +56,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <Sidebar user={user} profile={profile} />
+      <AlertWatcher />
       <main className="ml-[210px] flex-1 p-5 pb-16 min-h-screen">
         {children}
       </main>
