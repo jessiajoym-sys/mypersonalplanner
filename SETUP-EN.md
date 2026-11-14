@@ -58,3 +58,9 @@ e-statement attachments on Loans and Investments.
 2. Upload the new files to GitHub. IMPORTANT: delete the old folders `app/business/sambal`, `polar`, `chishee`, `homemate`, `jastip` (they are replaced by one page that works for every business).
 What's new: per-business workspace (Overview, Ledger, Sales & Ads, Receivable/Payable, Inventory, Reports, Plans, Marketing, Tasks & Projects, Settings)
 and a combined Business Dashboard.
+
+## Upgrade 7 — Growth & Reflection
+1. Run `lib/planner-upgrade-7.sql` in Supabase > SQL Editor (choose "Run and enable RLS" if asked).
+2. Upload the new files to GitHub (new folder `app/diary`, new `components/growth`).
+What's new: Resolutions (pace check, auto progress from projects/businesses, vision board), Odyssey Plan (pictures, compare, make tasks),
+Mood in Pixels (tags, energy, insights), Journal (guided prompts) and Diary (private, optional PIN), plus a Growth card on the Dashboard.

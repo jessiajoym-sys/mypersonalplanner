@@ -10,6 +10,7 @@ import SmartCalendar from '@/components/planner/SmartCalendar'
 import TaskForm from '@/components/planner/TaskForm'
 import { CardHeader } from '@/components/planner/Modal'
 import { computeStats, kindOf, pace, scheduledOn } from '@/lib/habits'
+import { PACE_STYLE, resolutionPace, resolutionProgress } from '@/lib/growth'
 import { BudgetSummary } from '@/components/finance/BudgetCard'
 import { monthStart } from '@/lib/finance'
 import { TX_COLS, fmt, fmtTotals, netTotals, totalsByCurrency } from '@/lib/finance'
@@ -17,6 +18,8 @@ import { HEALTH_STYLE, loadProjectData, projectHealth, spentOf, tasksOfProject }
 import { RatesCard, WeatherCard, WorldClocks } from '@/components/planner/GlanceWidgets'
 
 const money = (n: number) => 'Rp ' + Math.round(n).toLocaleString('en-US')
+
+const r_needs = (x: any) => x.r.progress_mode !== 'business' && ['behind', 'at-risk', 'overdue'].includes(x.pace.state)
 
 export default function Dashboard() {
   const [profile, setProfile] = useState<any>(null)
@@ -32,6 +35,9 @@ export default function Dashboard() {
   const [monthTx, setMonthTx] = useState<any[]>([])
   const [budgets, setBudgets] = useState<any[]>([])
   const [plans, setPlans] = useState<any[]>([])
+  const [resolutions, setResolutions] = useState<any[]>([])
+  const [moodToday, setMoodToday] = useState<number>(0)
+  const [uid, setUid] = useState('')
   const [taskForm, setTaskForm] = useState<{ initial?: any; defaults?: any } | null>(null)
   const today = todayStr()
 
@@ -51,6 +57,12 @@ export default function Dashboard() {
       supabase.from('progress_goals').select('*').eq('user_id', user.id).eq('archived', false),
     ])
     setGoals(gl.error ? [] : gl.data || [])
+    setUid(user.id)
+    const [rs, pxl] = await Promise.all([
+      supabase.from('resolutions').select('*').eq('user_id', user.id).eq('year', new Date().getFullYear()),
+      supabase.from('pixel_days').select('mood').eq('user_id', user.id).eq('date', today).maybeSingle(),
+    ])
+    setResolutions(rs.error ? [] : rs.data || []); setMoodToday(pxl.data?.mood || 0)
     const ms = monthStart(new Date())
     const [bg, bp] = await Promise.all([
       supabase.from('budgets').select('*').eq('user_id', user.id).eq('budget_month', ms).is('deleted_at', null),
@@ -244,6 +256,28 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {(() => {
+        const projectPct: Record<string, number> = {}
+        ;(pdata?.projects || []).forEach((p: any) => { projectPct[p.id] = projectHealth(p, tasksOfProject(pdata.todos, p.name), pdata.milestones.filter((m: any) => m.project_id === p.id), 0, today).progress })
+        const list = resolutions.map(r => { const pr = resolutionProgress(r, { projectPct, bizRevenue: {} }); return { r, pr, pace: resolutionPace(r, pr, today) } })
+        const attention = list.filter(x => r_needs(x)).sort((a, b) => a.pace.gap - b.pace.gap).slice(0, 3)
+        const overall = list.length ? Math.round(list.reduce((n, x) => n + x.pr, 0) / list.length) : 0
+        const MOODS = [['🌟', 5], ['😊', 4], ['😐', 3], ['😔', 2], ['😢', 1]] as const
+        return (
+          <div className="card mb-4">
+            <CardHeader icon="🌱" title="Growth" tone="purple" hint="How you feel today and which goals need a nudge." right={<Link href="/resolution" className="text-xs text-purple-600 font-semibold">Resolutions →</Link>} />
+            <div className="p-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-3"><span className="text-sm font-semibold">Mood today</span>
+                <div className="flex gap-1.5">{MOODS.map(([e, v]) => <button key={v} className={`text-2xl transition-transform hover:scale-125 ${moodToday === v ? '' : moodToday ? 'opacity-30' : ''}`} aria-label={`Mood ${v}`} onClick={async () => { const colors: any = { 5: '#22C55E', 4: '#86EFAC', 3: '#FDE68A', 2: '#FDBA74', 1: '#EF4444' }; await supabase.from('pixel_days').upsert({ user_id: uid, date: today, mood: v, color: colors[v] }, { onConflict: 'user_id,date' }); setMoodToday(v) }}>{e}</button>)}</div>
+                <Link href="/journal" className="ml-auto text-xs text-teal-600 font-semibold">📔 Write today’s journal →</Link></div>
+              {list.length > 0 && <div className="flex items-center gap-3"><div className="text-xl font-bold text-blue-500">{overall}%</div><div className="flex-1 h-2 rounded-full bg-gray-100"><div className="h-2 rounded-full bg-gradient-to-r from-blue-400 to-purple-500" style={{ width: `${overall}%` }} /></div><span className="text-[11px] text-gray-400">{list.length} goals</span></div>}
+              {attention.map(x => <Link key={x.r.id} href="/resolution" className="flex items-center gap-2 text-sm hover:bg-gray-50 rounded-lg px-2 py-1"><span>{x.r.emoji || '🎯'}</span><span className="flex-1 truncate">{x.r.title}</span><span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${PACE_STYLE[x.pace.state].cls}`}>{PACE_STYLE[x.pace.state].label} · {x.pr}%</span></Link>)}
+              {list.length === 0 && <div className="text-xs text-gray-400">Set your yearly goals in Resolutions to see them here.</div>}
+            </div>
+          </div>
+        )
+      })()}
 
       {(budgets.length > 0 || plans.length > 0) && (
         <div className="card mb-4">

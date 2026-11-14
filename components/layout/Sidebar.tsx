@@ -18,8 +18,9 @@ const groups: { key: string; title: string; entries: NavEntry[] }[] = [
   { key: 'growth', title: 'Growth & Reflection', entries: [
     { href: '/resolution', icon: '🗺️', label: 'Resolutions' },
     { href: '/odyssey', icon: '✨', label: 'Odyssey Plan' },
-    { href: '/years-in-pixels', icon: '🌈', label: 'Year in Pixels' },
+    { href: '/years-in-pixels', icon: '🌈', label: 'Mood in Pixels' },
     { href: '/journal', icon: '📔', label: 'Journal' },
+    { href: '/diary', icon: '🔒', label: 'Diary' },
   ] },
   { key: 'projects', title: 'Projects', entries: [
     { href: '/projects', icon: '📊', label: 'Projects Dashboard' },
