@@ -1,12 +1,34 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { exportAll, wipeAll } from '@/lib/reset'
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeTab, setActiveTab] = useState('profile')
+  const [confirmText, setConfirmText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [step, setStep] = useState('')
+  const [result, setResult] = useState<any>(null)
+
+  async function downloadBackup() {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return alert('Please sign in again.')
+    const data = await exportAll(user.id)
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
+    const a = document.createElement('a'); a.href = url; a.download = `myplanner-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url)
+  }
+  async function deleteEverything() {
+    if (confirmText.trim() !== 'DELETE') return
+    if (!confirm('Last check: this permanently deletes ALL your planner data. Continue?')) return
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return alert('Please sign in again.')
+    setBusy(true); setResult(null)
+    const r = await wipeAll(user.id, setStep)
+    setBusy(false); setStep(''); setConfirmText(''); setResult(r)
+  }
 
   useEffect(() => { load() }, [])
 
@@ -136,24 +158,30 @@ export default function SettingsPage() {
           <div className="text-sm font-semibold mb-4">Export & Backup</div>
           <div className="flex flex-col gap-3">
             {[
-              { label: '📊 Export all transactions (Excel)', desc: 'All financial data as .xlsx' },
-              { label: '📋 Export To Do List (Excel)', desc: 'All tasks and their status' },
-              { label: '📅 Export Calendar events (CSV)', desc: 'All events as .csv' },
-              { label: '📄 Export full backup (JSON)', desc: 'Complete data backup' },
+              { label: '📄 Download full backup (JSON)', desc: 'Everything you own: tasks, events, finance, businesses, habits… Keep this before deleting.', onClick: downloadBackup },
             ].map((e, i) => (
               <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
                 <div>
                   <div className="text-sm font-semibold">{e.label}</div>
                   <div className="text-xs text-gray-400 mt-0.5">{e.desc}</div>
                 </div>
-                <button className="btn-gray btn-sm">Download</button>
+                <button className="btn-gray btn-sm" onClick={e.onClick}>Download</button>
               </div>
             ))}
           </div>
           <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-xl">
             <div className="text-sm font-bold text-red-500 mb-1">⚠️ Danger Zone</div>
-            <div className="text-xs text-red-400 mb-3">These actions cannot be undone</div>
-            <button className="btn-red btn-sm">Delete all data</button>
+            <div className="text-xs text-red-400 mb-3">Deletes ALL your planner data (tasks, events, logs, habits, projects, finance, businesses, uploaded receipts). Your login and settings stay. This cannot be undone — download a backup first.</div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <input className="inp text-xs w-56" placeholder='Type DELETE to confirm' value={confirmText} onChange={e => setConfirmText(e.target.value)} disabled={busy} />
+              <button className="btn-red btn-sm" disabled={busy || confirmText.trim() !== 'DELETE'} onClick={deleteEverything}>{busy ? `Deleting… ${step}` : 'Delete all data'}</button>
+            </div>
+            {result && (
+              <div className="mt-3 text-xs space-y-1">
+                <div className="text-green-700 font-semibold">✅ Done — {result.cleared.length} tables cleared, {result.files} uploaded files removed. Refresh the page to start fresh.</div>
+                {result.failed.length > 0 && <div className="text-red-600">Could not clear: {result.failed.join(' · ')}</div>}
+              </div>
+            )}
           </div>
         </div>
       )}
