@@ -13,12 +13,30 @@ export default function SettingsPage() {
   const [step, setStep] = useState('')
   const [result, setResult] = useState<any>(null)
 
+  const [backup, setBackup] = useState<{ url: string; name: string; rows: number; tables: number } | null>(null)
+  const [backupMsg, setBackupMsg] = useState('')
+
   async function downloadBackup() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return alert('Please sign in again.')
-    const data = await exportAll(user.id)
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
-    const a = document.createElement('a'); a.href = url; a.download = `myplanner-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url)
+    setBackupMsg('Preparing your backup…'); setBackup(null)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) { setBackupMsg('Please sign in again.'); return }
+      const data = await exportAll(user.id)
+      const tables = Object.keys(data).length, rows = Object.values(data).reduce((n, r) => n + r.length, 0)
+      const name = `myplanner-backup-${new Date().toISOString().slice(0, 10)}.json`
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      setBackup({ url, name, rows, tables })
+      setBackupMsg(rows === 0 ? 'Nothing to back up yet — your planner has no data.' : `Backup ready: ${rows} rows from ${tables} tables.`)
+      // 1) phones: open the share sheet so you can save to Files / send to yourself
+      try {
+        const file = new File([blob], name, { type: 'application/json' })
+        const nav: any = navigator
+        if (nav.canShare?.({ files: [file] })) { await nav.share({ files: [file], title: name }); return }
+      } catch { /* user cancelled or unsupported → fall through */ }
+      // 2) computers: normal download (anchor must be in the page for some browsers)
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove()
+    } catch (e: any) { setBackupMsg('Could not create the backup: ' + (e?.message || 'unknown error')) }
   }
   async function deleteEverything() {
     if (confirmText.trim() !== 'DELETE') return
@@ -169,6 +187,12 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
+          {backupMsg && (
+            <div className="mt-3 text-xs rounded-xl bg-blue-50 text-blue-700 p-3 space-y-1">
+              <div>{backupMsg}</div>
+              {backup && backup.rows > 0 && <div>Didn’t download? <a href={backup.url} download={backup.name} className="underline font-semibold">Tap here to save the file</a> · <a href={backup.url} target="_blank" rel="noreferrer" className="underline font-semibold">open it in a new tab</a> (then copy/save the text).</div>}
+            </div>
+          )}
           <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-xl">
             <div className="text-sm font-bold text-red-500 mb-1">⚠️ Danger Zone</div>
             <div className="text-xs text-red-400 mb-3">Deletes ALL your planner data (tasks, events, logs, habits, projects, finance, businesses, uploaded receipts). Your login and settings stay. This cannot be undone — download a backup first.</div>
