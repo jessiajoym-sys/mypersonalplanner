@@ -64,3 +64,9 @@ and a combined Business Dashboard.
 2. Upload the new files to GitHub (new folder `app/diary`, new `components/growth`).
 What's new: Resolutions (pace check, auto progress from projects/businesses, vision board), Odyssey Plan (pictures, compare, make tasks),
 Mood in Pixels (tags, energy, insights), Journal (guided prompts) and Diary (private, optional PIN), plus a Growth card on the Dashboard.
+
+## Upgrade 8 – Finance foundation (Phase A)
+1. Supabase → SQL Editor → run `lib/planner-upgrade-8.sql` (adds columns/tables only; safe to re-run).
+2. Upload the project to GitHub; Vercel redeploys.
+3. Finance → Transactions: new 15-column sheet, Categories manager, Archived view, Split, Edit history.
+4. Import: messages now appear inside the import popup; saves are read back from the database; duplicates are skipped by fingerprint.

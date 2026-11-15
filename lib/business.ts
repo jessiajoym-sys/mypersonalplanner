@@ -22,7 +22,7 @@ export const BK_CLASSES: Record<string, { label: string; group: string }> = {
 export const OPEX_CATEGORIES = ['Platform fees', 'Advertising', 'Shipping', 'Packaging', 'Salary / labor', 'Rent', 'Utilities', 'Software', 'Marketing & content', 'Tax & licences', 'Other']
 
 export const isSpendTx = (t: any) => SPEND_TYPES.includes(t.type)
-export const cashEffect = (t: any) => (t.type === 'income' ? Number(t.amount) : isSpendTx(t) ? -Number(t.amount) : 0)
+export const cashEffect = (t: any) => (t.type === 'income' || t.type === 'refund' ? Number(t.amount) : isSpendTx(t) ? -Number(t.amount) : 0)
 
 /** Explicit class if set, otherwise a sensible guess from type + category. */
 export function classOf(t: any): string {

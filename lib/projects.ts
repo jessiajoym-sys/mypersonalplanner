@@ -73,6 +73,6 @@ export async function loadProjectData(supabase: any, userId: string) {
   return { projects: pr.error ? null : pr.data || [], milestones: ms.data || [], expenses: ex.data || [], todos: td.data || [], txs: tx.error ? [] : tx.data || [], error: pr.error?.message }
 }
 export const spentOf = (id: string, expenses: any[], txs: any[]) =>
-  expenses.filter(e => e.project_id === id && e.type !== 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id && ['expense', 'credit_card_purchase', 'fee'].includes(t.type)).reduce((s, t) => s + Number(t.amount || 0), 0)
+  expenses.filter(e => e.project_id === id && e.type !== 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id && ['expense', 'credit_card_purchase', 'fee', 'interest', 'refund'].includes(t.type)).reduce((s, t) => s + (t.type === 'refund' ? -1 : 1) * Number(t.amount || 0), 0)
 export const incomeOf = (id: string, expenses: any[], txs: any[]) =>
   expenses.filter(e => e.project_id === id && e.type === 'income').reduce((s, e) => s + Number(e.amount), 0) + txs.filter(t => String(t.project_id) === id && t.type === 'income').reduce((s, t) => s + Number(t.amount || 0), 0)

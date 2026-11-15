@@ -4,6 +4,7 @@ import { Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { emitChange } from '@/lib/planner'
 import { budgetStatus, daysInMonthOf, fmt, monthStart } from '@/lib/finance'
+import type { FinanceLists } from '@/lib/financeLists'
 
 const todayLocal = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 const bar = (pct: number) => (pct > 100 ? 'bg-red-500' : pct > 80 ? 'bg-amber-400' : 'bg-emerald-500')
@@ -44,10 +45,10 @@ export function BudgetSummary({ txs, budgets, plans, month = new Date() }: { txs
   )
 }
 
-type Props = { userId: string; month: Date; txs: any[]; budgets: any[]; plans: any[]; categories: string[]; onChanged: () => Promise<any> | void; onToast: (m: string) => void }
+type Props = { userId: string; month: Date; txs: any[]; budgets: any[]; plans: any[]; categories: string[]; lists: FinanceLists; onManageCategories: () => void; onChanged: () => Promise<any> | void; onToast: (m: string) => void }
 
 /** Full planner: total per currency → split into categories → optional daily caps. */
-export default function BudgetPlanner({ userId, month, txs, budgets, plans, categories, onChanged, onToast }: Props) {
+export default function BudgetPlanner({ userId, month, txs, budgets, plans, categories, lists, onManageCategories, onChanged, onToast }: Props) {
   const [cur, setCur] = useState('')
   const [form, setForm] = useState({ category: '', limit: '', daily: '' })
   const [newCur, setNewCur] = useState('')
@@ -69,8 +70,10 @@ export default function BudgetPlanner({ userId, month, txs, budgets, plans, cate
     const limit = Number(form.limit)
     if (!form.category.trim() || !Number.isFinite(limit) || limit <= 0) return onToast('Enter a category and a limit above zero.')
     if (budgets.some(b => b.currency === active && b.category.trim().toLowerCase() === form.category.trim().toLowerCase())) return onToast('That category already has a budget.')
-    const { error } = await supabase.from('budgets').insert({ user_id: userId, category: form.category.trim(), monthly_limit: limit, daily_limit: form.daily ? Number(form.daily) : null, currency: active, budget_month: mStart })
+    if (form.daily && !(Number(form.daily) > 0)) return onToast('Daily cap must be above zero (or leave it empty).')
+    const { data: saved, error } = await supabase.from('budgets').insert({ user_id: userId, category: form.category.trim(), monthly_limit: limit, daily_limit: form.daily ? Number(form.daily) : null, currency: active, budget_month: mStart }).select('id')
     if (error) return fail(error)
+    if (!saved?.length) return onToast('Could not save budget: the database did not confirm the new row.')
     setForm({ category: '', limit: '', daily: '' }); done('Category budget added.')
   }
   async function updateCat(id: string, values: any) {
@@ -109,7 +112,8 @@ export default function BudgetPlanner({ userId, month, txs, budgets, plans, cate
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-lg bg-gray-100 p-0.5 text-xs">{currencies.map(c => <button key={c} onClick={() => setCur(c)} className={`px-3 py-1 rounded-md font-semibold ${active === c ? 'bg-white shadow-sm' : 'text-gray-500'}`}>{c}</button>)}</div>
         <select className="sel text-xs" value="" onChange={e => e.target.value && (setNewCur(e.target.value), setCur(e.target.value))}><option value="">+ currency</option>{['CNY', 'IDR', 'USD', 'EUR', 'SGD'].filter(c => !currencies.includes(c)).map(c => <option key={c}>{c}</option>)}</select>
-        <button className="btn-gray btn-sm text-xs ml-auto" onClick={copyLastMonth}>Copy last month</button>
+        <button className="btn-gray btn-sm text-xs ml-auto" onClick={onManageCategories}>Manage categories</button>
+        <button className="btn-gray btn-sm text-xs" onClick={copyLastMonth}>Copy last month</button>
       </div>
 
       {s && <>
@@ -132,7 +136,7 @@ export default function BudgetPlanner({ userId, month, txs, budgets, plans, cate
           {s.cats.length === 0 && <div className="p-6 text-center text-sm text-gray-400">No categories yet — add one below.</div>}
           {s.cats.map(c => (
             <div key={c.id} className="grid sm:grid-cols-[1.4fr_1fr_1fr_1.6fr_auto] gap-3 px-4 py-3 items-center text-sm">
-              <b className="truncate">{c.category}</b>
+              <b className="truncate">{c.category}{lists.rows.some(r => r.kind === 'category' && r.is_archived && r.name.toLowerCase() === String(c.category).toLowerCase()) && !lists.rows.some(r => r.kind === 'category' && !r.is_archived && r.name.toLowerCase() === String(c.category).toLowerCase()) && <span className="text-[10px] font-normal text-gray-400"> · archived category</span>}</b>
               <input key={c.id + c.limit} type="number" className="inp text-xs" defaultValue={c.limit} onBlur={e => { const n = Number(e.target.value); n > 0 && n !== c.limit && updateCat(c.id, { monthly_limit: n }) }} />
               <div><input key={c.id + 'd' + c.daily} type="number" className="inp text-xs w-full" placeholder={`≈ ${Math.round(c.limit / days)}`} defaultValue={c.daily || ''} onBlur={e => { const n = e.target.value === '' ? null : Number(e.target.value); if ((n || 0) !== c.daily && (n === null || n > 0)) updateCat(c.id, { daily_limit: n }) }} />
                 {c.daily > 0 && <div className={`text-[10px] mt-0.5 ${c.dailyOver ? 'text-red-500 font-semibold' : 'text-gray-400'}`}>today {fmt(c.today, active)}</div>}</div>
@@ -142,14 +146,17 @@ export default function BudgetPlanner({ userId, month, txs, budgets, plans, cate
             </div>
           ))}
           <div className="p-4 bg-gray-50 grid sm:grid-cols-[1.4fr_1fr_1fr_auto] gap-2">
-            <input className="inp text-xs" list="budget-cats" placeholder="Category (e.g. Food)" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+            <select className="sel text-xs" value={form.category} onChange={async e => {
+              if (e.target.value !== '__new') return setForm({ ...form, category: e.target.value })
+              const n = prompt('New category name (it will also appear in Transactions):')?.trim(); if (!n) return
+              const err = await lists.add('category', n, 'both'); err ? onToast('Could not add category: ' + err) : setForm({ ...form, category: n })
+            }}><option value="">Category…</option>{categories.map(c => <option key={c}>{c}</option>)}<option value="__new">+ New category…</option></select>
             <input type="number" className="inp text-xs" placeholder="Monthly limit" value={form.limit} onChange={e => setForm({ ...form, limit: e.target.value })} />
             <input type="number" className="inp text-xs" placeholder="Daily cap (optional)" value={form.daily} onChange={e => setForm({ ...form, daily: e.target.value })} />
             <button className="btn-blue btn-sm text-xs" onClick={addCat}>Add</button>
-            <datalist id="budget-cats">{categories.map(c => <option key={c} value={c} />)}</datalist>
           </div>
         </div>
-        <p className="text-[11px] text-gray-400">Spending is counted automatically from your transactions (expenses, card purchases and fees) by category name. Tip: tag transactions with the same category names you use here.</p>
+        <p className="text-[11px] text-gray-400">Spending is counted automatically from your transactions (expenses, card purchases, fees and interest, minus refunds) by category. Categories are shared with Transactions — add or archive them in Manage categories. Archiving a category never changes past budgets.</p>
       </>}
     </div>
   )

@@ -1,6 +1,6 @@
 // Shared helpers that read the REAL `transactions` table
 // (type / amount / currency / transaction_date / deleted_at), grouped per currency.
-export const SPEND_TYPES = ['expense', 'credit_card_purchase', 'fee']
+export const SPEND_TYPES = ['expense', 'credit_card_purchase', 'fee', 'interest']
 export const TX_COLS = 'id,type,amount,currency,category,merchant,description,business_id,project_id,transaction_date,from_account_id,to_account_id'
 
 export const CUR_SYMBOL: Record<string, string> = { IDR: 'Rp ', CNY: '¥', USD: '$', EUR: '€', SGD: 'S$' }
@@ -9,6 +9,8 @@ export const fmt = (n: number, cur = 'IDR') => (CUR_SYMBOL[cur] ?? cur + ' ') + 
 export type Totals = Record<string, number>
 export const isSpend = (t: any) => SPEND_TYPES.includes(t.type)
 export const isIncome = (t: any) => t.type === 'income'
+/** Spending effect of a transaction: + for spending types, − for refunds (they cancel earlier spending), 0 for transfers, card payments, loan principal, adjustments. */
+export const netSpend = (t: any) => (SPEND_TYPES.includes(t.type) ? Number(t.amount || 0) : t.type === 'refund' ? -Number(t.amount || 0) : 0)
 
 /** Sum income and spending per currency. */
 export function totalsByCurrency(rows: any[]) {
@@ -17,6 +19,7 @@ export function totalsByCurrency(rows: any[]) {
     const c = t.currency || 'IDR', a = Number(t.amount || 0)
     if (isIncome(t)) income[c] = (income[c] || 0) + a
     else if (isSpend(t)) spent[c] = (spent[c] || 0) + a
+    else if (t.type === 'refund') spent[c] = (spent[c] || 0) - a
   }
   return { income, spent }
 }
@@ -39,9 +42,10 @@ export const daysInMonthOf = (d: Date) => new Date(d.getFullYear(), d.getMonth()
 export function spentByCategory(txs: any[], currency: string, prefix: string) {
   const m: Record<string, number> = {}
   for (const t of txs) {
-    if (t.currency !== currency || !isSpend(t) || !String(t.transaction_date || '').startsWith(prefix)) continue
+    const ns = netSpend(t)
+    if (t.currency !== currency || ns === 0 || !String(t.transaction_date || '').startsWith(prefix)) continue
     const k = String(t.category || 'Other').trim().toLowerCase()
-    m[k] = (m[k] || 0) + Number(t.amount || 0)
+    m[k] = (m[k] || 0) + ns
   }
   return m
 }

@@ -4,8 +4,12 @@ import type { ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Plus, Trash2, X, Eye, EyeOff, Camera, Upload, FileText, Pencil } from 'lucide-react'
 import TransactionSheet from '@/components/finance/TransactionSheet'
+import CategoryManager from '@/components/finance/CategoryManager'
+import { useFinanceLists } from '@/lib/financeLists'
+import { TX_TYPES, balanceDelta, flowOf, fingerprints, hash, needsDestination, typeLabel } from '@/lib/ledger'
 import BudgetPlanner, { BudgetSummary } from '@/components/finance/BudgetCard'
 import { monthStart, isSpend, fmt } from '@/lib/finance'
+import { emitChange } from '@/lib/planner'
 
 function localDateString(date = new Date()) {
   const year = date.getFullYear()
@@ -28,11 +32,7 @@ function categoryCurrencyKey(category: string, currency: string) {
 }
 
 function transactionLabel(type: string) {
-  if (type === 'income') return 'Income / refund'
-  if (type === 'transfer') return 'Transfer'
-  if (type === 'credit_card_purchase') return 'Credit card purchase'
-  if (type === 'fee') return 'Fee / interest'
-  return 'Expense'
+  return typeLabel(type)
 }
 
 const FINANCE_CATEGORIES = [
@@ -43,17 +43,7 @@ const FINANCE_CATEGORIES = [
 ]
 
 function transactionBalanceDelta(accountId: string, accountType: string, tx: any) {
-  const amount = Number(tx.amount || 0)
-  if (tx.type === 'income' && tx.from_account_id === accountId) return accountType === 'credit_card' ? -amount : amount
-  if (tx.type === 'transfer') {
-    if (tx.from_account_id === accountId) return -amount
-    if (tx.to_account_id === accountId) return accountType === 'credit_card' ? -amount : amount
-  }
-  if (tx.from_account_id !== accountId) return 0
-  if (tx.type === 'credit_card_purchase') return amount
-  if (tx.type === 'expense') return -amount
-  if (tx.type === 'fee') return accountType === 'credit_card' ? amount : -amount
-  return 0
+  return balanceDelta(accountId, accountType, tx)
 }
 
 function parseMoneyInput(value: string) {
@@ -98,7 +88,7 @@ function parseCsv(text: string) {
 }
 
 type PdfStatementKind = 'debit' | 'credit_card'
-type StatementDraft = { id: string; date: string; merchant: string; amount: number; type: string; category: string; include: boolean; raw: string; sourceFile?: string }
+type StatementDraft = { id: string; date: string; merchant: string; amount: number; type: string; category: string; include: boolean; raw: string; sourceFile?: string; auto: string; direction: 'debit' | 'credit'; origDate: string; origAmount: number; purpose: string; subcategory: string; business_id: string; project_id: string }
 
 type StatementSummary = { opening: number | null; credits: number | null; debits: number | null; closing: number | null; previousBill: number | null; currentBill: number | null; minimumPayment: number | null; dueDate: string | null; creditLimit: number | null }
 
@@ -174,12 +164,16 @@ function parseStatementCandidates(text: string, kind: PdfStatementKind, year: nu
       .replace(/\b(?:MID|DDR|TGH|ADM|QR)\s*:?\s*\S+/gi, ' ')
       .replace(/\s+/g, ' ').trim()
     const isPayment = /\b(pembayaran|payment|bayar tagihan)\b/i.test(raw)
-    const isFee = /\b(biaya|admin|bunga|fee|interest)\b/i.test(raw)
-    const isCredit = /\bCR\s*$/i.test(record.first)
-    const type = kind === 'credit_card'
-      ? (isPayment ? 'skip' : isFee ? 'fee' : isCredit ? 'income' : 'credit_card_purchase')
-      : (isPayment ? 'skip' : (/\b(CR|CREDIT)\b/i.test(record.first) ? 'income' : 'expense'))
-    drafts.push({ id: String(index), date, merchant: merchant || raw || 'Statement transaction', amount, type, category: isFee ? 'Fees & interest' : isCredit ? 'Refund' : 'Other', include: type !== 'skip', raw })
+    const isInterest = /\b(bunga|interest)\b/i.test(raw)
+    const isFee = isInterest || /\b(biaya|admin|fee)\b/i.test(raw)
+    const isCredit = kind === 'credit_card' ? /\bCR\s*$/i.test(record.first) : /\b(CR|CREDIT)\b/i.test(record.first)
+    // Card payments are NOT spending (the purchases already counted). They are unticked until you pick the other account.
+    const type = isPayment ? 'credit_card_payment'
+      : isCredit ? (kind === 'credit_card' ? 'refund' : 'income')
+      : isFee ? (isInterest ? 'interest' : 'fee')
+      : kind === 'credit_card' ? 'credit_card_purchase' : 'expense'
+    const finalMerchant = merchant || raw || 'Statement transaction'
+    drafts.push({ id: String(index), date, merchant: finalMerchant, auto: finalMerchant, amount, type, category: 'Other', include: type !== 'credit_card_payment', raw, direction: isCredit ? 'credit' : 'debit', origDate: date, origAmount: amount, purpose: '', subcategory: '', business_id: '', project_id: '' })
   }
   return drafts
 }
@@ -215,6 +209,15 @@ export default function FinancialPlanner() {
   const [statementSnapshotMonth, setStatementSnapshotMonth] = useState<Date | null>(null)
   const [statementModal, setStatementModal] = useState(false)
   const [statementBusy, setStatementBusy] = useState(false)
+  const [statementCounterId, setStatementCounterId] = useState('')
+  const [importMsg, setImportMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [showCategories, setShowCategories] = useState(false)
+  const lists = useFinanceLists(user?.id)
+  // Messages raised while the import popup is open are shown INSIDE the popup (the page behind it is hidden).
+  const notify = (text: string, kind?: 'ok' | 'error') => {
+    const k = kind || (/could not|failed|error|choose|select at least|enter |must |no transactions|run lib|only \d+ of/i.test(text) ? 'error' : 'ok')
+    setToast(text); setImportMsg({ kind: k, text })
+  }
 
   // Account Form
   const [showAddAccount, setShowAddAccount] = useState(false)
@@ -326,9 +329,9 @@ export default function FinancialPlanner() {
   }
 
   async function readStatementPdf() {
-    if (!statementFiles.length) { setToast('Choose one or more PDF statements first.'); return }
+    if (!statementFiles.length) { notify('Choose one or more PDF statements first.'); return }
     const oversized = statementFiles.filter(file => file.size > 25 * 1024 * 1024)
-    if (oversized.length) { setToast('Ukuran maksimal tiap PDF 25 MB. Terlalu besar: ' + oversized.map(file => file.name).join(', ')); return }
+    if (oversized.length) { notify('Ukuran maksimal tiap PDF 25 MB. Terlalu besar: ' + oversized.map(file => file.name).join(', ')); return }
     setStatementBusy(true)
     try {
       // PDF bytes and password are processed in this browser; neither is uploaded to Supabase.
@@ -397,89 +400,143 @@ export default function FinancialPlanner() {
       setStatementSnapshotMonth(latestSnapshotMonth)
       if (!allDrafts.length) {
         setStatementDrafts([])
-        setToast('No transactions were recognized. ' + fileErrors.join(' '))
+        notify('No transactions were recognized. ' + fileErrors.join(' '))
         return
       }
       setStatementDrafts(allDrafts)
       setStatementPassword('')
       const matching = accounts.filter(account => statementKind === 'credit_card' ? account.type === 'credit_card' : account.type !== 'credit_card')
       if (!matching.some(account => account.id === statementAccountId)) setStatementAccountId(matching[0]?.id || '')
-      setToast(allDrafts.length + ' rows found in ' + orderedFiles.length + ' PDFs. Review them before saving.' + (fileErrors.length ? ' Some files need attention: ' + fileErrors.join(' ') : ''))
+      notify(allDrafts.length + ' rows found in ' + orderedFiles.length + ' PDFs. Review them before saving.' + (fileErrors.length ? ' Some files need attention: ' + fileErrors.join(' ') : ''))
     } catch (error: any) {
       setStatementPassword('')
       const message = String(error?.message || '')
-      setToast(/password/i.test(message) ? 'The PDF password is incorrect or missing. It is used only to read this file.' : 'Could not read PDF: ' + (message || 'Unknown file format.'))
+      notify(/password/i.test(message) ? 'The PDF password is incorrect or missing. It is used only to read this file.' : 'Could not read PDF: ' + (message || 'Unknown file format.'))
     } finally {
       setStatementBusy(false)
     }
   }
 
   async function importStatementDrafts() {
-    if (!user || !statementAccountId) { setToast('Choose the matching statement account.'); return }
+    setImportMsg(null)
+    if (!user) { notify('Could not save: you appear to be signed out. Reload the page and sign in again.', 'error'); return }
+    if (!statementAccountId) { notify('Choose the matching statement account.', 'error'); return }
     const account = accounts.find(item => item.id === statementAccountId)
     if (!account || (statementKind === 'credit_card' && account.type !== 'credit_card') || (statementKind === 'debit' && account.type === 'credit_card')) {
-      setToast('The account type must match the statement type.'); return
+      notify('The account type must match the statement type.', 'error'); return
     }
     const selected = statementDrafts.filter(row => row.include && row.type !== 'skip')
-    if (!selected.length) { setToast('Select at least one transaction to save.'); return }
-    if (selected.some(row => row.type === 'transfer') && !statementTransferAccountId) { setToast('Choose a destination account for the transfer row.'); return }
-    const target = accounts.find(item => item.id === statementTransferAccountId)
-    if (selected.some(row => row.type === 'transfer') && (!target || target.id === account.id || target.currency !== account.currency)) {
-      setToast('The source and destination accounts must be different and use the same currency.'); return
+    if (!selected.length) { notify('Select at least one transaction to save.', 'error'); return }
+    const bad = selected.filter(row => !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !Number.isFinite(row.amount) || row.amount <= 0)
+    if (bad.length) { notify(`Could not save: ${bad.length} selected row(s) have a missing date or an amount of zero (first: "${bad[0].merchant.slice(0, 40)}"). Fix or untick them.`, 'error'); return }
+    const counter = accounts.find(item => item.id === statementCounterId)
+    if (selected.some(row => needsDestination(row.type))) {
+      if (!counter || counter.id === account.id || counter.currency !== account.currency) { notify('Choose the other account for the transfer / card-payment rows (different from this one, same currency).', 'error'); return }
+      if (selected.some(row => row.type === 'credit_card_payment') && ![account, counter].some(a => a.type === 'credit_card')) { notify('A credit card payment needs one credit card account and one bank account.', 'error'); return }
     }
-    const rows = selected.map(row => ({
-      user_id: user.id, type: row.type, amount: row.amount, currency: account.currency,
-      from_account_id: account.id, to_account_id: row.type === 'transfer' ? target?.id : null,
-      category: row.category.trim() || 'Other', merchant: row.merchant.trim() || null,
-      description: 'Diimpor dari PDF statement', transaction_date: row.date, source: 'manual'
-    }))
-    const signatures = new Set(transactions.map(tx => [tx.transaction_date, tx.from_account_id, tx.type, Number(tx.amount), String(tx.merchant || '').trim().toLowerCase()].join('|')))
-    const uniqueRows = rows.filter(row => {
-      const signature = [row.transaction_date, row.from_account_id, row.type, Number(row.amount), String(row.merchant || '').trim().toLowerCase()].join('|')
-      if (signatures.has(signature)) return false
-      signatures.add(signature)
-      return true
+
+    // --- fingerprints: same statement imported twice => same fingerprints => skipped; two identical purchases on one day => both kept
+    const normal = statementDrafts.filter(r => r.type !== 'skip' && !needsDestination(r.type))
+    const normalHashes = new Map<string, string>()
+    fingerprints(normal.map(r => ({ date: r.origDate, amount: r.origAmount, direction: r.direction, text: r.raw })), account.id).forEach((h, i) => normalHashes.set(normal[i].id, h))
+    const seenPair: Record<string, number> = {}
+    const pairHash = (r: StatementDraft) => {
+      const from = statementKind === 'credit_card' ? counter?.id : account.id, to = statementKind === 'credit_card' ? account.id : counter?.id
+      const base = ['pair', from, to, r.origDate, Number(r.origAmount).toFixed(2)].join('|')
+      seenPair[base] = (seenPair[base] || 0) + 1
+      return hash(base + '#' + seenPair[base])
+    }
+    const batchId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : undefined
+    const prepared = selected.map(row => {
+      const pays = needsDestination(row.type)
+      const edited = row.merchant.trim() && row.merchant.trim() !== row.auto.trim() ? row.merchant.trim() : null
+      return {
+        user_id: user.id, type: row.type, amount: row.amount, currency: account.currency,
+        from_account_id: pays ? (statementKind === 'credit_card' ? counter!.id : account.id) : account.id,
+        to_account_id: pays ? (statementKind === 'credit_card' ? account.id : counter!.id) : null,
+        category: row.category.trim() || 'Other', subcategory: row.subcategory.trim() || null,
+        merchant: row.merchant.trim() || row.auto || null,
+        original_description: row.raw, my_description: edited,
+        original_amount: row.origAmount, original_direction: row.direction,
+        description: null, notes: null,
+        purpose: row.purpose || null, business_id: row.business_id || null, project_id: row.project_id || null,
+        transaction_date: row.date, source: 'manual', source_file: row.sourceFile || null,
+        import_batch: batchId, import_hash: pays ? pairHash(row) : normalHashes.get(row.id) || null,
+      }
     })
-    if (!uniqueRows.length) { setToast('These transactions appear to have already been imported. No duplicates were saved.'); return }
-    const skipped = rows.length - uniqueRows.length
-    const snapshotBalance = statementKind === 'credit_card' ? statementSummary?.currentBill : statementSummary?.closing
-    const snapshotNote = snapshotBalance === null || snapshotBalance === undefined
-      ? ' The closing balance could not be read from the PDF, so the account balance will not be reconciled automatically.'
-      : ' Closing balance PDF ' + formatMoney(snapshotBalance, account.currency) + ' akan dicocokkan otomatis.'
-    if (!window.confirm('Save ' + uniqueRows.length + ' transactions?' + (skipped ? ' ' + skipped + ' duplicates skipped.' : '') + ' Check that dates, types, and amounts are correct.' + snapshotNote)) return
+
     setSaving(true)
     try {
-      const { error } = await supabase.from('transactions').insert(uniqueRows)
-      if (error) throw error
-      if (statementSummary) {
-        if (snapshotBalance !== null && snapshotBalance !== undefined) {
-          const snapshotMonth = statementSnapshotMonth || selectedMonth
-          const monthEnd = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth() + 1, 0))
-          const rowsThroughStatement = [...transactions, ...uniqueRows].filter(row => row.transaction_date <= monthEnd)
-          const ledgerActivity = rowsThroughStatement.reduce((sum, row) => sum + transactionBalanceDelta(account.id, account.type, row), 0)
-          const summaryUpdate: any = {
-            opening_balance: snapshotBalance - ledgerActivity,
-            current_balance: snapshotBalance
-          }
-          if (statementKind === 'credit_card') {
-            summaryUpdate.last_statement_month = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth(), 1))
-            summaryUpdate.last_statement_balance = snapshotBalance
-            summaryUpdate.minimum_payment = statementSummary.minimumPayment
-            summaryUpdate.statement_due_date = statementSummary.dueDate
-            summaryUpdate.credit_limit = statementSummary.creditLimit || account.credit_limit
-          }
-          const { error: summaryError } = await supabase.from('accounts').update(summaryUpdate).eq('id', account.id).eq('user_id', user.id)
-          if (summaryError) setToast('Transactions saved, but the statement balance could not be reconciled: ' + summaryError.message)
-        }
+      // 1) rows already in the database (same fingerprint) are skipped
+      const known = new Set<string>()
+      const hashes = prepared.map(r => r.import_hash).filter(Boolean) as string[]
+      for (let i = 0; i < hashes.length; i += 150) {
+        const { data, error } = await supabase.from('transactions').select('import_hash').eq('user_id', user.id).in('import_hash', hashes.slice(i, i + 150))
+        if (error) throw error
+        ;(data || []).forEach((d: any) => known.add(d.import_hash))
       }
-      setStatementDrafts([])
-      setStatementSummary(null)
-      setStatementFiles([])
-      setStatementModal(false)
-      const refreshed = await load()
-      setToast(refreshed ? uniqueRows.length + ' statement transactions saved.' : 'Transactions were submitted, but the list could not be refreshed.')
-    } catch (error: any) { setToast('Could not save statement transactions: ' + (error?.message || 'Check the database.')) }
-    finally { setSaving(false) }
+      // 2) older rows (imported before fingerprints existed): skip only as many as already exist
+      const legacy: Record<string, number> = {}
+      const sig = (r: any) => [r.transaction_date, r.from_account_id, r.type, Number(r.amount), String(r.merchant || '').trim().toLowerCase()].join('|')
+      transactions.filter(t => !t.import_hash).forEach(t => { const k = sig(t); legacy[k] = (legacy[k] || 0) + 1 })
+      const used: Record<string, number> = {}
+      const fresh = prepared.filter(r => {
+        if (r.import_hash && known.has(r.import_hash)) return false
+        const k = sig(r); used[k] = (used[k] || 0) + 1
+        return used[k] > (legacy[k] || 0)
+      })
+      const skipped = prepared.length - fresh.length
+      if (!fresh.length) { notify(`Nothing new to save: all ${prepared.length} selected transactions are already in your planner (${skipped} duplicates skipped).`, 'ok'); return }
+
+      // 3) insert in chunks and keep the ids the database gives back
+      let inserted = 0, firstError = ''
+      for (let i = 0; i < fresh.length; i += 100) {
+        const chunk = fresh.slice(i, i + 100)
+        const { data, error } = await supabase.from('transactions').insert(chunk).select('id')
+        if (error) { firstError = error.message + (error.details ? ' (' + error.details + ')' : ''); break }
+        inserted += (data || []).length
+      }
+      // 4) read back from the database: never report success on faith
+      let confirmed = 0
+      if (batchId) {
+        const { count, error } = await supabase.from('transactions').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('import_batch', batchId).is('deleted_at', null)
+        if (error) firstError = firstError || 'Saved rows could not be re-read: ' + error.message
+        confirmed = count || 0
+      } else confirmed = inserted
+      const status = firstError ? (confirmed > 0 ? 'partial' : 'failed') : confirmed === fresh.length ? 'saved' : 'partial'
+      if (batchId) await supabase.from('import_batches').insert({ id: batchId, user_id: user.id, account_id: account.id, kind: statementKind, file_names: Array.from(new Set(selected.map(r => r.sourceFile).filter(Boolean))), rows_selected: prepared.length, rows_saved: confirmed, rows_skipped_duplicates: skipped, status, error: firstError || null })
+
+      if (firstError || confirmed !== fresh.length) {
+        await load()
+        const hint = /original_description|import_hash|import_batch|my_description|subcategory|schema cache|column/i.test(firstError) ? ' → Run lib/planner-upgrade-8.sql in Supabase (SQL Editor), reload, then press Save again.' : /type_check|check constraint/i.test(firstError) ? ' → Run lib/planner-upgrade-8.sql in Supabase to allow the new transaction types.' : ''
+        notify(`Could not save everything: ${confirmed} of ${fresh.length} rows are in the database.${firstError ? ' Database said: ' + firstError : ' The count did not match.'}${hint} Nothing is lost on screen — fix the cause and press Save again; rows already saved will be skipped as duplicates.`, 'error')
+        return
+      }
+
+      const snapshotBalance = statementKind === 'credit_card' ? statementSummary?.currentBill : statementSummary?.closing
+      let balanceNote = ''
+      if (statementSummary && snapshotBalance !== null && snapshotBalance !== undefined) {
+        const snapshotMonth = statementSnapshotMonth || selectedMonth
+        const monthEnd = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth() + 1, 0))
+        const rowsThroughStatement = [...transactions, ...fresh].filter((row: any) => row.transaction_date <= monthEnd)
+        const ledgerActivity = rowsThroughStatement.reduce((sum, row) => sum + transactionBalanceDelta(account.id, account.type, row), 0)
+        const summaryUpdate: any = { opening_balance: snapshotBalance - ledgerActivity, current_balance: snapshotBalance }
+        if (statementKind === 'credit_card') {
+          summaryUpdate.last_statement_month = localDateString(new Date(snapshotMonth.getFullYear(), snapshotMonth.getMonth(), 1))
+          summaryUpdate.last_statement_balance = snapshotBalance
+          summaryUpdate.minimum_payment = statementSummary.minimumPayment
+          summaryUpdate.statement_due_date = statementSummary.dueDate
+          summaryUpdate.credit_limit = statementSummary.creditLimit || account.credit_limit
+        }
+        const { error: summaryError } = await supabase.from('accounts').update(summaryUpdate).eq('id', account.id).eq('user_id', user.id)
+        balanceNote = summaryError ? ' (Statement balance could not be reconciled: ' + summaryError.message + ')' : ' Account balance reconciled to the statement closing balance.'
+      }
+      setStatementDrafts([]); setStatementSummary(null); setStatementFiles([]); setStatementModal(false)
+      await load(); emitChange()
+      setToast(`Saved ${confirmed} transactions and confirmed them in the database.${skipped ? ` ${skipped} duplicates skipped.` : ''}${balanceNote}`)
+    } catch (error: any) {
+      notify('Could not save statement transactions: ' + (error?.message || 'unknown database error') + (/column|schema cache|check constraint/i.test(error?.message || '') ? ' → Run lib/planner-upgrade-8.sql in Supabase first.' : ''), 'error')
+    } finally { setSaving(false) }
   }
 
   // Add Account
@@ -947,8 +1004,10 @@ export default function FinancialPlanner() {
     } else if (tx.type === 'income') {
       monthlyIncome[tx.currency] = (monthlyIncome[tx.currency] || 0) + Number(tx.amount)
     }
-    if (['expense', 'credit_card_purchase', 'fee'].includes(tx.type)) {
+    if (flowOf(tx) === 'spending') {
       monthlySpending[tx.currency] = (monthlySpending[tx.currency] || 0) + Number(tx.amount)
+    } else if (tx.type === 'refund') {
+      monthlySpending[tx.currency] = (monthlySpending[tx.currency] || 0) - Number(tx.amount)
     }
   })
   const summaryCurrencies = Array.from(new Set([
@@ -979,16 +1038,16 @@ export default function FinancialPlanner() {
   transactions.forEach(tx => {
     const sourceAccount = accounts.find(account => account.id === tx.from_account_id)
     if (tx.transaction_date.startsWith(thisMonth) &&
-        (['expense', 'credit_card_purchase', 'fee'].includes(tx.type) || (tx.type === 'income' && sourceAccount?.type === 'credit_card'))) {
+        (flowOf(tx) === 'spending' || tx.type === 'refund' || (tx.type === 'income' && sourceAccount?.type === 'credit_card'))) {
       const key = categoryCurrencyKey(tx.category, tx.currency)
       if (!spending[key]) spending[key] = 0
-      spending[key] += tx.type === 'income' ? -Number(tx.amount) : Number(tx.amount)
+      spending[key] += (tx.type === 'income' || tx.type === 'refund') ? -Number(tx.amount) : Number(tx.amount)
     }
   })
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <datalist id="finance-category-options">{FINANCE_CATEGORIES.map(category => <option key={category} value={category} />)}</datalist>
+      <datalist id="finance-category-options">{lists.categories.map(category => <option key={category} value={category} />)}</datalist>
       <div className="flex items-center justify-between mb-6">
         <div><h1 className="text-2xl font-bold">Financial Planner 💰</h1><p className="text-sm text-gray-400 mt-1">Multi-account · Multi-currency · Connected to your business</p></div>
         <div className="flex flex-wrap gap-2">
@@ -1009,7 +1068,7 @@ export default function FinancialPlanner() {
             setStatementSummary(null)
             setStatementSnapshotMonth(null)
             setStatementPassword('')
-            setStatementModal(true)
+            setImportMsg(null); setStatementModal(true)
           }} />
           <input ref={receiptInputRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
             onChange={event => {
@@ -1038,11 +1097,11 @@ export default function FinancialPlanner() {
         <span className="text-xs text-gray-400">{selectedMonth.getFullYear()}</span>
       </div>
 
-      {/* Toast */}
+      {/* Toast: floats above everything (including popups) so a save error can never be hidden */}
       {toast && (
-        <div className={`mb-4 p-3 rounded-lg text-sm flex items-center justify-between ${(toast.toLowerCase().includes('failed') || toast.toLowerCase().includes('error') || toast.toLowerCase().includes('could not')) ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+        <div role="status" className={`fixed top-4 left-1/2 -translate-x-1/2 z-[90] w-[min(92vw,640px)] shadow-lg p-3 rounded-xl text-sm flex items-start justify-between gap-3 ${/could not|failed|error|run lib|only \d+ of/i.test(toast) ? 'bg-red-100 text-red-800 border border-red-200' : 'bg-green-100 text-green-800 border border-green-200'}`}>
           <span>{toast}</span>
-          <button onClick={() => setToast(null)} className="text-green-500"><X size={16} /></button>
+          <button onClick={() => setToast(null)} className="opacity-60 shrink-0" aria-label="Dismiss"><X size={16} /></button>
         </div>
       )}
 
@@ -1265,11 +1324,7 @@ export default function FinancialPlanner() {
                 <div className="grid grid-cols-2 gap-3">
                   <select className="sel text-sm" value={txForm.type}
                     onChange={e => setTxForm({ ...txForm, type: e.target.value, from_account_id: '', to_account_id: '' })}>
-                    <option value="expense">Expense</option>
-                    <option value="income">Income / refund</option>
-                    <option value="transfer">Transfer between accounts</option>
-                    <option value="credit_card_purchase">Credit card purchase</option>
-                    <option value="fee">Fee / interest</option>
+                    {TX_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                   <select className="sel text-sm" value={txForm.currency}
                     onChange={e => setTxForm({ ...txForm, currency: e.target.value, from_account_id: '', to_account_id: '' })}>
@@ -1331,14 +1386,14 @@ export default function FinancialPlanner() {
             </div>
           )}
 
-          <TransactionSheet transactions={transactions} accounts={accounts} businesses={businesses} projects={projectList} categories={FINANCE_CATEGORIES}
-            userId={user?.id || ''} month={thisMonth} onChanged={load} onToast={setToast} openReceipt={openReceipt} />
+          <TransactionSheet transactions={transactions} accounts={accounts} businesses={businesses} projects={projectList} lists={lists}
+            userId={user?.id || ''} month={thisMonth} onChanged={load} onToast={setToast} openReceipt={openReceipt} onManageCategories={() => setShowCategories(true)} />
         </div>
       )}
 
       {/* BUDGETS TAB */}
       {tab === 'budgets' && user && (
-        <BudgetPlanner userId={user.id} month={selectedMonth} txs={transactions} budgets={budgets} plans={plans} categories={FINANCE_CATEGORIES} onChanged={load} onToast={setToast} />
+        <BudgetPlanner userId={user.id} month={selectedMonth} txs={transactions} budgets={budgets} plans={plans} categories={lists.categories} lists={lists} onManageCategories={() => setShowCategories(true)} onChanged={load} onToast={setToast} />
       )}
 
       {tab === 'rmb' && (
@@ -1431,9 +1486,10 @@ export default function FinancialPlanner() {
           {summaryCurrencies.map(currency => {
             const periodRows = transactions.filter(tx => tx.currency === currency && tx.transaction_date?.startsWith(thisMonth))
             const income = periodRows.filter(tx => tx.type === 'income').reduce((sum, tx) => sum + Number(tx.amount), 0)
-            const expenses = periodRows.filter(tx => ['expense', 'fee', 'credit_card_purchase'].includes(tx.type)).reduce((sum, tx) => sum + Number(tx.amount), 0)
+            const signed = (tx: any) => flowOf(tx) === 'spending' ? Number(tx.amount) : tx.type === 'refund' ? -Number(tx.amount) : 0
+            const expenses = periodRows.reduce((sum, tx) => sum + signed(tx), 0)
             const categories = new Map<string, number>()
-            periodRows.filter(tx => ['expense', 'fee', 'credit_card_purchase'].includes(tx.type)).forEach(tx => categories.set(tx.category || 'Other', (categories.get(tx.category || 'Other') || 0) + Number(tx.amount)))
+            periodRows.filter(tx => signed(tx) !== 0).forEach(tx => categories.set(tx.category || 'Other', (categories.get(tx.category || 'Other') || 0) + signed(tx)))
             return <div key={currency} className="card p-5"><h3 className="font-bold mb-3">{currency} · {selectedMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</h3><div className="grid grid-cols-3 gap-2 text-sm mb-4"><div><div className="text-gray-400 text-xs">Income</div><b className="text-green-600">{formatMoney(income, currency)}</b></div><div><div className="text-gray-400 text-xs">Spending</div><b className="text-red-500">{formatMoney(expenses, currency)}</b></div><div><div className="text-gray-400 text-xs">Net</div><b>{formatMoney(income - expenses, currency)}</b></div></div><h4 className="font-semibold text-sm">Spending by category</h4>{Array.from(categories.entries()).map(([category, amount]) => <div key={category} className="flex justify-between border-b py-2 text-sm"><span>{category}</span><span>{formatMoney(amount, currency)}</span></div>)}{categories.size === 0 && <p className="text-sm text-gray-500 mt-2">No spending recorded this month.</p>}</div>
           })}
           {summaryCurrencies.length === 0 && <div className="card p-5 text-sm text-gray-500">No report data yet.</div>}
@@ -1459,6 +1515,7 @@ export default function FinancialPlanner() {
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3 sm:p-6" onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFiles([]) }}>
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-5" onClick={event => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 mb-4"><div><h2 className="font-bold text-lg">Import Multiple E-Statement PDFs</h2><p className="text-xs text-gray-500 mt-1">PDFs and passwords are read in this browser only. Select multiple PDFs; only transactions you approve will be saved.</p><p className="text-xs text-amber-700 mt-1">Each batch must use PDFs for the same account and statement type, with the same password. Create a separate batch for each account. The month is detected from the filename (for example: BCA January 2026.pdf); if missing, the planner uses the month selected on this page.</p></div><button onClick={() => { setStatementModal(false); setStatementPassword(''); setStatementFiles([]) }} className="text-gray-400"><X size={18}/></button></div>
+            {importMsg && <div role="alert" className={`sticky top-0 z-10 mb-3 rounded-lg p-3 text-sm flex justify-between gap-3 ${importMsg.kind === 'error' ? 'bg-red-100 text-red-800 border border-red-200' : 'bg-green-100 text-green-800 border border-green-200'}`}><span>{importMsg.text}</span><button onClick={() => setImportMsg(null)} className="opacity-60 shrink-0"><X size={16} /></button></div>}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
               <label className="text-xs font-semibold text-gray-600">Statement type<select className="sel w-full mt-1" value={statementKind} onChange={event => { setStatementKind(event.target.value as PdfStatementKind); setStatementAccountId(''); setStatementDrafts([]) }}><option value="debit">Bank account</option><option value="credit_card">Credit card</option></select></label>
               <label className="text-xs font-semibold text-gray-600">Matching account<select className="sel w-full mt-1" value={statementAccountId} onChange={event => setStatementAccountId(event.target.value)}><option value="">Choose an account...</option>{accounts.filter(account => statementKind === 'credit_card' ? account.type === 'credit_card' : account.type !== 'credit_card').map(account => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label>
@@ -1468,13 +1525,14 @@ export default function FinancialPlanner() {
               {statementDrafts.length > 0 && <>
               <div className="rounded-lg bg-amber-50 text-amber-800 p-3 text-xs mb-3">Review dates, amounts, types, and categories before saving. Scanned image PDFs are not supported yet. Credit card payments are unselected by default to avoid counting a payment twice when it is also listed in your bank account.</div>
               {statementSummary && (statementSummary.currentBill !== null || statementSummary.minimumPayment !== null || statementSummary.closing !== null) && <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">{statementKind === 'credit_card' ? <><div className="card p-3 text-xs">Previous statement bill<br/><b>{statementSummary.previousBill === null ? '—' : formatMoney(statementSummary.previousBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Current statement bill<br/><b>{statementSummary.currentBill === null ? '—' : formatMoney(statementSummary.currentBill, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Minimum payment<br/><b>{statementSummary.minimumPayment === null ? '—' : formatMoney(statementSummary.minimumPayment, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Due date<br/><b>{statementSummary.dueDate || '—'}</b></div></> : <><div className="card p-3 text-xs">Opening balance<br/><b>{statementSummary.opening === null ? '—' : formatMoney(statementSummary.opening, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Credits (CR)<br/><b>{statementSummary.credits === null ? '—' : formatMoney(statementSummary.credits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Debits (DB)<br/><b>{statementSummary.debits === null ? '—' : formatMoney(statementSummary.debits, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div><div className="card p-3 text-xs">Closing balance<br/><b>{statementSummary.closing === null ? '—' : formatMoney(statementSummary.closing, accounts.find(item=>item.id===statementAccountId)?.currency || 'IDR')}</b></div></>}</div>}
-              {statementKind === 'debit' && statementDrafts.some(row => row.type === 'transfer') && <label className="block text-xs font-semibold text-gray-600 mb-3">Destination account for card transfer<select className="sel mt-1 w-full" value={statementTransferAccountId} onChange={event => setStatementTransferAccountId(event.target.value)}><option value="">Choose a destination account...</option>{accounts.filter(account => account.currency === accounts.find(item => item.id === statementAccountId)?.currency && account.id !== statementAccountId).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
-              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="p-2">Include</th><th className="p-2">PDF source</th><th className="p-2">Date</th><th className="p-2">Description</th><th className="p-2">Amount</th><th className="p-2">Type</th><th className="p-2">Category</th></tr></thead><tbody>{statementDrafts.map((row,index)=><tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,include:event.target.checked}:item))}/></td><td className="p-2 max-w-40 truncate" title={row.sourceFile}>{row.sourceFile}</td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,date:event.target.value}:item))}/></td><td className="p-2"><input className="inp min-w-48 text-xs" value={row.merchant} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,merchant:event.target.value}:item))}/></td><td className="p-2"><input className="inp w-28 text-xs" type="number" min="0" step="0.01" value={row.amount} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,amount:Number(event.target.value)}:item))}/></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,type:event.target.value,include:event.target.value!=='skip'}:item))}>{statementKind==='credit_card'?<><option value="credit_card_purchase">Card purchase</option><option value="income">Refund</option><option value="fee">Fee / interest</option><option value="skip">Skip (for example, card payment)</option></>:<><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option><option value="fee">Fee</option><option value="skip">Skip</option></>}</select></td><td className="p-2"><input className="inp w-28 text-xs" list="finance-category-options" value={row.category} onChange={event=>setStatementDrafts(statementDrafts.map((item,i)=>i===index?{...item,category:event.target.value}:item))}/></td></tr>)}</tbody></table></div>
+              {statementDrafts.some(row => row.include && needsDestination(row.type)) && <label className="block text-xs font-semibold text-gray-600 mb-3">{statementKind === 'credit_card' ? 'Account the card payment came from' : 'Other account (card being paid / transfer destination)'}<select className="sel mt-1 w-full" value={statementCounterId} onChange={event => setStatementCounterId(event.target.value)}><option value="">Choose an account...</option>{accounts.filter(account => account.currency === accounts.find(item => item.id === statementAccountId)?.currency && account.id !== statementAccountId).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select><span className="block font-normal text-[11px] text-gray-400 mt-1">Card payments and transfers move money between your own accounts — they are not counted as spending or income. If the same payment appears on the bank AND the card statement, it is saved only once.</span></label>}
+              <div className="overflow-x-auto border rounded-xl"><table className="w-full text-xs min-w-[1400px]"><thead className="bg-gray-50 text-left"><tr><th className="p-2">Include</th><th className="p-2">PDF</th><th className="p-2">Date</th><th className="p-2">Original description</th><th className="p-2">My description</th><th className="p-2">Debit / Credit</th><th className="p-2">Type</th><th className="p-2">Purpose</th><th className="p-2">Business</th><th className="p-2">Project</th><th className="p-2">Category</th><th className="p-2">Subcategory</th></tr></thead><tbody>{statementDrafts.map((row,index)=>{const set=(v:Partial<StatementDraft>)=>setStatementDrafts(statementDrafts.map((item,j)=>j===index?{...item,...v}:item));const credit=['income','refund','loan_disbursement'].includes(row.type)||(row.type==='adjustment'&&row.direction==='credit');return <tr key={row.id} className="border-t align-top"><td className="p-2 text-center"><input type="checkbox" checked={row.include} onChange={event=>set({include:event.target.checked})}/></td><td className="p-2 max-w-28 truncate" title={row.sourceFile}>{row.sourceFile}</td><td className="p-2"><input className="inp w-32 text-xs" type="date" value={row.date} onChange={event=>set({date:event.target.value})}/></td><td className="p-2 max-w-56 text-gray-500 break-words select-text" title={row.raw}>{row.raw}</td><td className="p-2"><input className="inp min-w-44 text-xs" value={row.merchant} onChange={event=>set({merchant:event.target.value})}/></td><td className="p-2 whitespace-nowrap"><input className={`inp w-28 text-xs ${credit?'text-green-600':'text-red-500'}`} type="number" min="0" step="0.01" value={row.amount} onChange={event=>set({amount:Number(event.target.value)})}/><div className="text-[10px] text-gray-400 mt-0.5">{credit?'Credit (money in)':'Debit (money out)'}</div></td><td className="p-2"><select className="sel text-xs" value={row.type} onChange={event=>set({type:event.target.value,include:event.target.value==='skip'?false:needsDestination(event.target.value)?row.include:true})}>{TX_TYPES.filter(t=>statementKind==='credit_card'?!['income','expense','loan_disbursement','loan_repayment'].includes(t.value):t.value!=='credit_card_purchase').map(t=><option key={t.value} value={t.value}>{t.label}</option>)}<option value="skip">Skip this row</option></select></td><td className="p-2"><select className="sel text-xs" value={row.purpose} onChange={event=>set({purpose:event.target.value})}><option value="">—</option>{lists.purposes.map(x=><option key={x}>{x}</option>)}</select></td><td className="p-2"><select className="sel text-xs" value={row.business_id} onChange={event=>set({business_id:event.target.value})}><option value="">—</option>{businesses.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></td><td className="p-2"><select className="sel text-xs" value={row.project_id} onChange={event=>set({project_id:event.target.value})}><option value="">—</option>{projectList.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></td><td className="p-2"><select className="sel text-xs" value={row.category} onChange={event=>set({category:event.target.value,subcategory:''})}>{Array.from(new Set([...lists.categories,row.category].filter(Boolean))).map(c=><option key={c}>{c}</option>)}</select></td><td className="p-2"><input className="inp w-28 text-xs" list={`imp-sub-${row.id}`} value={row.subcategory} onChange={event=>set({subcategory:event.target.value})}/><datalist id={`imp-sub-${row.id}`}>{lists.subcategoriesOf(row.category).map(x=><option key={x} value={x}/>)}</datalist></td></tr>})}</tbody></table></div>
               <div className="flex justify-end gap-2 mt-4"><button onClick={importStatementDrafts} disabled={saving} className="btn-blue btn-sm">Save selected transactions ({statementDrafts.filter(row=>row.include&&row.type!=='skip').length})</button></div>
             </>}
           </div>
         </div>
       )}
+      {showCategories && <CategoryManager lists={lists} onToast={setToast} onClose={() => setShowCategories(false)} />}
     </div>
   )
 }
