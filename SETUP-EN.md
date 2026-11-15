@@ -76,3 +76,6 @@ Mood in Pixels (tags, energy, insights), Journal (guided prompts) and Diary (pri
 2. Fixed: frequency, payment account, keywords, status; bills are linked to the real transaction (amount + keyword/account + period). Unlink / change / mark paid / skip.
 3. Loans (/financial/loans): full fields, amortization schedule, rate changes (recalculates future installments), partial/full prepayment, principal vs interest vs fees posted separately.
 4. Credit Card Manager: statement history, payments matched to statements, "Convert to card payment" for payments wrongly recorded as expenses.
+
+## Upgrade 10 – RMB import (Alipay CSV, WeChat Excel)
+Finance → RMB → "Import Alipay / WeChat". Needs upgrade 8 SQL. New dependency `xlsx` (installed automatically by Vercel).

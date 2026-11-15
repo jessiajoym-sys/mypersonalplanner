@@ -4,6 +4,7 @@ import type { ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Plus, Trash2, X, Eye, EyeOff, Camera, Upload, FileText, Pencil } from 'lucide-react'
 import TransactionSheet from '@/components/finance/TransactionSheet'
+import RmbImport from '@/components/finance/RmbImport'
 import CardManager from '@/components/finance/CardManager'
 import FixedBills from '@/components/finance/FixedBills'
 import CategoryManager from '@/components/finance/CategoryManager'
@@ -214,6 +215,7 @@ export default function FinancialPlanner() {
   const [statementCounterId, setStatementCounterId] = useState('')
   const [importMsg, setImportMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [showCategories, setShowCategories] = useState(false)
+  const [showRmbImport, setShowRmbImport] = useState(false)
   const lists = useFinanceLists(user?.id)
   // Messages raised while the import popup is open are shown INSIDE the popup (the page behind it is hidden).
   const notify = (text: string, kind?: 'ok' | 'error') => {
@@ -1405,7 +1407,7 @@ export default function FinancialPlanner() {
 
       {tab === 'rmb' && (
         <div className="space-y-4">
-          <div className="card p-5"><h2 className="font-bold text-lg">RMB / Yuan</h2><p className="text-sm text-gray-500">Shows CNY accounts and transactions only. Values are not converted to IDR.</p>
+          <div className="card p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-bold text-lg">RMB / Yuan</h2><p className="text-sm text-gray-500">A CNY view of your one central transaction list. Values are never converted to IDR.</p></div><button className="btn-blue btn-sm" onClick={() => setShowRmbImport(true)}>Import Alipay / WeChat</button></div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
               <div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Available balance</div><b className="text-xl">{formatMoney(balances.find(item => item.currency === 'CNY')?.available || 0, 'CNY')}</b></div>
               <div className="rounded-xl bg-gray-50 p-4"><div className="text-xs text-gray-500">Income this month</div><b className="text-xl text-green-600">{formatMoney(monthlyIncome.CNY || 0, 'CNY')}</b></div>
@@ -1493,6 +1495,7 @@ export default function FinancialPlanner() {
           </div>
         </div>
       )}
+      {showRmbImport && user && <RmbImport userId={user.id} accounts={accounts} lists={lists} onChanged={load} onToast={setToast} onClose={() => setShowRmbImport(false)} />}
       {showCategories && <CategoryManager lists={lists} onToast={setToast} onClose={() => setShowCategories(false)} />}
     </div>
   )
