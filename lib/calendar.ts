@@ -165,14 +165,19 @@ export function billItems(fixed: any[], loans: any[], from: string, to: string):
     if (m > 11) { m = 0; y++ }
     const last = new Date(y, m + 1, 0).getDate()
     for (const b of fixed) {
+      if (b.status && b.status !== 'active') continue
+      const step = ({ quarterly: 3, semiannual: 6, yearly: 12 } as Record<string, number>)[b.frequency || 'monthly'] || 1
+      if (step > 1 && ((((m + 1) - Number(b.due_month || 1)) % step) + step) % step !== 0) continue
       const d = `${y}-${pad(m + 1)}-${pad(Math.min(Number(b.due_day) || 1, last))}`
       if (d >= from && d <= to) out.push({ key: `bill-${b.id}-${d}`, id: b.id, kind: 'milestone', title: `💸 ${b.name}`, date: d, allDay: true, color: '#14B8A6', category: 'Bills', raw: { href: '/financial', ...b } } as CalItem)
     }
     for (const l of loans) {
-      if (!l.next_due_date) continue
-      const day = Number(String(l.next_due_date).slice(8, 10)) || 1
+      if (l.status && l.status !== 'active') continue
+      const anchor = l.next_due_date || l.first_installment_date
+      if (!anchor) continue
+      const day = Number(l.due_day) || Number(String(anchor).slice(8, 10)) || 1
       const d = `${y}-${pad(m + 1)}-${pad(Math.min(day, last))}`
-      if (d >= from && d <= to && d >= l.next_due_date) out.push({ key: `loan-${l.id}-${d}`, id: l.id, kind: 'milestone', title: `🏦 ${l.name}`, date: d, allDay: true, color: '#14B8A6', category: 'Bills', raw: { href: '/financial/loans', ...l } } as CalItem)
+      if (d >= from && d <= to && d >= (l.next_due_date || l.first_installment_date)) out.push({ key: `loan-${l.id}-${d}`, id: l.id, kind: 'milestone', title: `🏦 ${l.name}`, date: d, allDay: true, color: '#14B8A6', category: 'Bills', raw: { href: '/financial/loans', ...l } } as CalItem)
     }
     if (m === 11 && y >= t.getFullYear()) break
   }

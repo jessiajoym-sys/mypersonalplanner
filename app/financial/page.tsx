@@ -4,6 +4,8 @@ import type { ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Plus, Trash2, X, Eye, EyeOff, Camera, Upload, FileText, Pencil } from 'lucide-react'
 import TransactionSheet from '@/components/finance/TransactionSheet'
+import CardManager from '@/components/finance/CardManager'
+import FixedBills from '@/components/finance/FixedBills'
 import CategoryManager from '@/components/finance/CategoryManager'
 import { useFinanceLists } from '@/lib/financeLists'
 import { TX_TYPES, balanceDelta, flowOf, fingerprints, hash, needsDestination, typeLabel } from '@/lib/ledger'
@@ -528,6 +530,7 @@ export default function FinancialPlanner() {
           summaryUpdate.statement_due_date = statementSummary.dueDate
           summaryUpdate.credit_limit = statementSummary.creditLimit || account.credit_limit
         }
+        if (statementKind === 'credit_card') await supabase.from('card_statements').upsert({ user_id: user.id, account_id: account.id, statement_month: summaryUpdate.last_statement_month, due_date: statementSummary.dueDate || null, statement_balance: snapshotBalance, minimum_payment: statementSummary.minimumPayment, credit_limit: statementSummary.creditLimit || account.credit_limit || null }, { onConflict: 'user_id,account_id,statement_month' })   // best-effort history
         const { error: summaryError } = await supabase.from('accounts').update(summaryUpdate).eq('id', account.id).eq('user_id', user.id)
         balanceNote = summaryError ? ' (Statement balance could not be reconciled: ' + summaryError.message + ')' : ' Account balance reconciled to the statement closing balance.'
       }
@@ -621,18 +624,18 @@ export default function FinancialPlanner() {
       setToast('Choose an account for this transaction.')
       return
     }
-    if (txForm.type === 'transfer' && !txForm.to_account_id) {
-      setToast('Choose a destination account for this transfer.')
+    if (needsDestination(txForm.type) && !txForm.to_account_id) {
+      setToast('Choose a destination account (for a card payment: the credit card being paid).')
       return
     }
-    if (txForm.type === 'transfer' && txForm.from_account_id === txForm.to_account_id) {
+    if (needsDestination(txForm.type) && txForm.from_account_id === txForm.to_account_id) {
       setToast('Choose two different source and destination accounts.')
       return
     }
     const sourceAccount = accounts.find(a => a.id === txForm.from_account_id)
     const destinationAccount = accounts.find(a => a.id === txForm.to_account_id)
     if (!sourceAccount || sourceAccount.currency !== txForm.currency ||
-        (txForm.type === 'transfer' && (!destinationAccount || destinationAccount.currency !== txForm.currency))) {
+        (needsDestination(txForm.type) && (!destinationAccount || destinationAccount.currency !== txForm.currency))) {
       setToast('Choose an account with the same currency as the transaction.')
       return
     }
@@ -640,8 +643,12 @@ export default function FinancialPlanner() {
       setToast('For a credit card purchase, choose a credit card account.')
       return
     }
-    if (txForm.type !== 'credit_card_purchase' && sourceAccount.type === 'credit_card') {
-      setToast('Choose a bank or cash account. Credit card purchases use the dedicated transaction type.')
+    if (txForm.type === 'credit_card_payment' && destinationAccount?.type !== 'credit_card') {
+      setToast('A credit card payment must go to a credit card account.')
+      return
+    }
+    if (!['credit_card_purchase', 'refund', 'fee', 'interest', 'adjustment'].includes(txForm.type) && sourceAccount.type === 'credit_card') {
+      setToast('Choose a bank or cash account. Charges on a card use the Credit Card Purchase type.')
       return
     }
 
@@ -667,7 +674,7 @@ export default function FinancialPlanner() {
         amount,
         currency: txForm.currency,
         from_account_id: txForm.from_account_id,
-        to_account_id: txForm.type === 'transfer' ? txForm.to_account_id : null,
+        to_account_id: needsDestination(txForm.type) ? txForm.to_account_id : null,
         category: txForm.category.trim(),
         merchant: txForm.merchant.trim() || null,
         description: txForm.description.trim() || null,
@@ -1340,23 +1347,23 @@ export default function FinancialPlanner() {
                   <select className="sel w-full text-sm mt-1" value={txForm.from_account_id}
                     onChange={e => setTxForm({ ...txForm, from_account_id: e.target.value })}>
                     <option value="">Choose an account...</option>
-                    {accounts.filter(a => a.currency === txForm.currency && (txForm.type === 'credit_card_purchase' ? a.type === 'credit_card' : a.type !== 'credit_card')).map(a => (
+                    {accounts.filter(a => a.currency === txForm.currency && (txForm.type === 'credit_card_purchase' ? a.type === 'credit_card' : ['refund', 'fee', 'interest', 'adjustment'].includes(txForm.type) ? true : a.type !== 'credit_card')).map(a => (
                       <option key={a.id} value={a.id}>{a.name}</option>
                     ))}
                   </select>
                 </label>
-                {txForm.type === 'transfer' && (
-                  <label className="block text-xs font-semibold text-gray-600">To account
+                {needsDestination(txForm.type) && (
+                  <label className="block text-xs font-semibold text-gray-600">{txForm.type === 'credit_card_payment' ? 'Credit card being paid' : 'To account'}
                     <select className="sel w-full text-sm mt-1" value={txForm.to_account_id}
                       onChange={e => setTxForm({ ...txForm, to_account_id: e.target.value })}>
                       <option value="">Choose a destination account...</option>
-                      {accounts.filter(a => a.currency === txForm.currency && a.id !== txForm.from_account_id).map(a => (
+                      {accounts.filter(a => a.currency === txForm.currency && a.id !== txForm.from_account_id && (txForm.type !== 'credit_card_payment' || a.type === 'credit_card')).map(a => (
                         <option key={a.id} value={a.id}>{a.name}</option>
                       ))}
                     </select>
                   </label>
                 )}
-                {txForm.type === 'credit_card_purchase' && <p className="text-xs text-gray-500">This purchase increases your card balance. Record the payment as a transfer from your bank account to the card.</p>}
+                {txForm.type === 'credit_card_purchase' && <p className="text-xs text-gray-500">This purchase increases your card balance. Record the payment with type “Credit Card Payment” (bank → card); it is not counted as spending again.</p>}
                 <div className="grid grid-cols-2 gap-3">
                   <input type="text" className="inp text-sm" list="finance-category-options" placeholder="Category"
                     value={txForm.category} onChange={e => setTxForm({ ...txForm, category: e.target.value })} />
@@ -1415,56 +1422,10 @@ export default function FinancialPlanner() {
         </div>
       )}
 
-      {tab === 'ccm' && (
-        <div className="space-y-4">
-          <div className="card p-5"><h2 className="font-bold text-lg">Credit Card Manager</h2><p className="text-sm text-gray-500">Track card balances, credit limits, statement dates, and payment due dates.</p></div>
-          {accounts.filter(item => item.type === 'credit_card').map(card => {
-            const debt = Math.max(0, balanceById.get(card.id) || 0)
-            const limit = Number(card.credit_limit || 0)
-            const used = limit > 0 ? Math.min(debt / limit * 100, 100) : 0
-            return <div key={card.id} className="card p-5"><div className="flex justify-between gap-3"><div><h3 className="font-bold">{card.name}</h3><p className="text-xs text-gray-500">{card.bank_name || 'Credit card'}{card.account_number_last4 ? ' · •••• ' + card.account_number_last4 : ''}</p></div><div className="text-right"><div className="text-xs text-gray-500">Current card balance</div><b className="text-red-600">{formatMoney(debt, card.currency)}</b></div></div>
-              <div className="mt-4"><div className="flex justify-between text-xs text-gray-500"><span>Limit: {formatMoney(limit, card.currency)}</span><span>{limit > 0 ? `${used.toFixed(0)}% used` : 'No limit set'}</span></div><div className="h-2 bg-gray-100 rounded-full mt-1"><div className={`h-2 rounded-full ${used >= 90 ? 'bg-red-500' : 'bg-teal-500'}`} style={{ width: `${used}%` }} /></div></div>
-              <div className="grid grid-cols-2 gap-3 mt-4 text-sm"><div><div className="text-xs text-gray-400">Date cetak</div><b>{card.billing_cycle_day || 'Not set'}</b></div><div><div className="text-xs text-gray-400">Due date</div><b>{card.payment_due_day || 'Not set'}</b></div></div>
-              {(card.last_statement_balance != null || card.minimum_payment != null) && <div className="mt-3 rounded-xl bg-amber-50 p-3 text-xs"><b>Latest statement summary</b><div className="mt-1">{card.last_statement_month || ''} · Statement bill: {card.last_statement_balance == null ? '—' : formatMoney(card.last_statement_balance, card.currency)} · Minimum payment: {card.minimum_payment == null ? '—' : formatMoney(card.minimum_payment, card.currency)} · Due date: {card.statement_due_date || '—'}</div></div>}
-              <button onClick={() => { setTab('transactions'); setTxForm({ ...txForm, type: 'transfer', currency: card.currency, to_account_id: card.id, from_account_id: '' }) }} className="btn-gray btn-sm mt-4">Record card payment</button>
-            </div>
-          })}
-          {accounts.filter(item => item.type === 'credit_card').length === 0 && <div className="card p-6 text-sm text-gray-500">No credit cards yet. Add a credit card account in Accounts.</div>}
-        </div>
-      )}
+      {tab === 'ccm' && user && <CardManager userId={user.id} accounts={accounts} transactions={transactions} balanceById={balanceById} onChanged={load} onToast={setToast}
+        onRecordPayment={card => { setTab('transactions'); setShowAddTx(true); setTxForm({ ...txForm, type: 'credit_card_payment', currency: card.currency, to_account_id: card.id, from_account_id: '', category: 'Other' }) }} />}
 
-      {tab === 'fixed' && (
-        <div className="space-y-4">
-          <div className="card p-5"><h2 className="font-bold text-lg">Fixed Expenses</h2><p className="text-sm text-gray-500">Recurring bills and due dates. This is a reminder; record a transaction when you pay.</p></div>
-          <div className="card p-4"><div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-            <input className="inp text-sm" placeholder="Bill name" value={fixedForm.name} onChange={e => setFixedForm({ ...fixedForm, name: e.target.value })} />
-            <input className="inp text-sm" placeholder="Category" value={fixedForm.category} onChange={e => setFixedForm({ ...fixedForm, category: e.target.value })} />
-            <input className="inp text-sm" type="number" min="1" placeholder="Amount" value={fixedForm.amount || ''} onChange={e => setFixedForm({ ...fixedForm, amount: Number(e.target.value) })} />
-            <select className="sel text-sm" value={fixedForm.currency} onChange={e => setFixedForm({ ...fixedForm, currency: e.target.value })}><option value="IDR">IDR</option><option value="CNY">CNY</option><option value="USD">USD</option></select>
-            <div className="flex gap-2"><input className="inp text-sm w-20" type="number" min="1" max="31" aria-label="Payment due day" value={fixedForm.due_day} onChange={e => setFixedForm({ ...fixedForm, due_day: Number(e.target.value) })} /><button onClick={addFixedExpense} disabled={saving} className="btn-blue btn-sm">Add</button></div>
-          </div><p className="text-xs text-gray-400 mt-2">The last number is the due day (1–31).</p></div>
-          {(() => {
-            const todayD = new Date(), ym = monthStart(todayD).slice(0, 7), dayNow = todayD.getDate()
-            const totals: Record<string, number> = {}
-            fixedExpenses.forEach(f => { totals[f.currency] = (totals[f.currency] || 0) + Number(f.amount) })
-            return <>
-              {fixedExpenses.length > 0 && <div className="card p-4 flex flex-wrap gap-x-6 gap-y-1 text-sm"><span className="text-gray-500">Total fixed per month:</span>{Object.entries(totals).map(([c, v]) => <b key={c}>{fmt(v, c)}</b>)}</div>}
-              <div className="space-y-2">{fixedExpenses.map(item => {
-                const kw = String(item.match_keyword || item.name).trim().toLowerCase()
-                const paid = transactions.find(t => isSpend(t) && t.currency === item.currency && String(t.transaction_date).startsWith(ym) && `${t.merchant || ''} ${t.description || ''}`.toLowerCase().includes(kw))
-                const late = !paid && dayNow > Number(item.due_day), soon = !paid && !late && Number(item.due_day) - dayNow <= 3
-                return <div key={item.id} className="card p-4 space-y-2">
-                  <div className="flex items-center justify-between gap-3"><div className="min-w-0"><b>{item.name}</b><div className="text-xs text-gray-500">{item.category} · due on day {item.due_day}</div></div>
-                    <div className="flex items-center gap-3"><span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${paid ? 'bg-green-100 text-green-700' : late ? 'bg-red-100 text-red-600' : soon ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>{paid ? `✓ Paid ${String(paid.transaction_date).slice(5)}` : late ? 'Overdue / not found' : soon ? 'Due soon' : 'Upcoming'}</span>
-                      <b>{formatMoney(item.amount, item.currency)}</b><button onClick={() => archiveFixedExpense(item.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button></div></div>
-                  <label className="flex items-center gap-2 text-[11px] text-gray-400">Match e-statement lines containing
-                    <input className="inp text-xs flex-1 max-w-xs" defaultValue={item.match_keyword || ''} placeholder={item.name} onBlur={async e => { if (e.target.value.trim() === (item.match_keyword || '')) return; const { error } = await supabase.from('financial_fixed_expenses').update({ match_keyword: e.target.value.trim() || null }).eq('id', item.id).eq('user_id', user.id); setToast(error ? 'Could not save keyword: ' + error.message + ' — run lib/planner-upgrade-5.sql first.' : 'Keyword saved.'); if (!error) load() }} /></label>
-                </div>
-              })}{fixedExpenses.length === 0 && <div className="card p-5 text-sm text-gray-500">No recurring bills yet. Add insurance, mortgage, laptop instalments… they appear in your calendar and are ticked off automatically when a matching transaction (e.g. from an imported e-statement) shows up.</div>}</div>
-            </>
-          })()}
-        </div>
-      )}
+      {tab === 'fixed' && user && <FixedBills userId={user.id} accounts={accounts} transactions={transactions} lists={lists} onChanged={load} onToast={setToast} />}
 
       {tab === 'goals' && (
         <div className="space-y-4">

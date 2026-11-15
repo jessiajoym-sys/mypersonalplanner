@@ -70,3 +70,9 @@ Mood in Pixels (tags, energy, insights), Journal (guided prompts) and Diary (pri
 2. Upload the project to GitHub; Vercel redeploys.
 3. Finance → Transactions: new 15-column sheet, Categories manager, Archived view, Split, Edit history.
 4. Import: messages now appear inside the import popup; saves are read back from the database; duplicates are skipped by fingerprint.
+
+## Upgrade 9 – Fixed bills, Loans, Credit cards (Phase B)
+1. Run `lib/planner-upgrade-8.sql` first (if not yet), then `lib/planner-upgrade-9.sql` in Supabase SQL Editor.
+2. Fixed: frequency, payment account, keywords, status; bills are linked to the real transaction (amount + keyword/account + period). Unlink / change / mark paid / skip.
+3. Loans (/financial/loans): full fields, amortization schedule, rate changes (recalculates future installments), partial/full prepayment, principal vs interest vs fees posted separately.
+4. Credit Card Manager: statement history, payments matched to statements, "Convert to card payment" for payments wrongly recorded as expenses.
