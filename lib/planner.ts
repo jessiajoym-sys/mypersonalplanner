@@ -10,7 +10,9 @@ export const DEFAULT_PROJECTS = [
   { name: 'Finance', color: '#14B8A6', dot: 'bg-teal-500' },
 ]
 export const projectColor = (name?: string | null) =>
-  DEFAULT_PROJECTS.find(p => p.name === name)?.color || '#8B5CF6'
+  (name && PROJECT_COLOR_CACHE.get(name)) || DEFAULT_PROJECTS.find(p => p.name === name)?.color || '#8B5CF6'
+/** filled by lib/taskProjects.ts when projects load, so colors follow your own projects */
+export const PROJECT_COLOR_CACHE = new Map<string, string>()
 
 export const STATUS_OPTIONS = [
   { val: 'todo', label: 'To Do', cls: 'bg-gray-100 text-gray-500' },

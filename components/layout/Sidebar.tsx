@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import { ensureSeed } from '@/lib/taskProjects'
 import { supabase } from '@/lib/supabase'
 
 type SidebarProps = { user: any; profile: any; open?: boolean }
@@ -24,9 +25,6 @@ const groups: { key: string; title: string; entries: NavEntry[] }[] = [
   ] },
   { key: 'projects', title: 'Projects', entries: [
     { href: '/projects', icon: '📊', label: 'Projects Dashboard' },
-    { href: '/projects/travel', icon: '📱', label: 'Travel Content' },
-    { href: '/projects/s2', icon: '🎓', label: "Master's Degree" },
-    { href: '/projects/mandarin', icon: '📖', label: 'Mandarin Study' },
   ] },
   { key: 'finance', title: 'Finance', entries: [
     { href: '/financial', icon: '💰', label: 'Financial Planner' },
@@ -59,7 +57,8 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
   }
 
   async function loadProjects() {
-    const { data } = await supabase.from('projects').select('id,name,emoji,status').eq('user_id', user.id).neq('status', 'done').order('created_at')
+    await ensureSeed(user.id)   // first time only: turns the old lists/workspaces into editable projects
+    const { data } = await supabase.from('projects').select('id,name,emoji,status,legacy_route').eq('user_id', user.id).neq('status', 'done').order('created_at')
     setProjects(data || [])
   }
 
@@ -100,7 +99,7 @@ export default function Sidebar({ user, profile, open }: SidebarProps) {
         {businesses.map(biz => navItem({ href: `/business/${biz.id}`, icon: biz.emoji || '💼', label: biz.name }))}
         {navItem({ href: '/business/new', icon: '＋', label: 'Add Business' })}
       </>)}
-      {section('projects', groups[2].title, <>{groups[2].entries.map(navItem)}{projects.map(pr => navItem({ href: `/projects/${pr.id}`, icon: pr.emoji || '📁', label: pr.name }))}</>)}
+      {section('projects', groups[2].title, <>{groups[2].entries.map(navItem)}{projects.map(pr => navItem({ href: pr.legacy_route || `/projects/${pr.id}`, icon: pr.emoji || '📁', label: pr.name }))}</>)}
       {section('finance', groups[3].title, groups[3].entries.map(navItem))}
 
       <div className="mt-auto pt-3 border-t border-gray-100">

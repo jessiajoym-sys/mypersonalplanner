@@ -1,4 +1,5 @@
 'use client'
+import { deleteList } from '@/lib/taskProjects'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
@@ -80,7 +81,7 @@ export default function ProjectPage() {
   const addRisk = async () => { if (!risk.text.trim()) return; await upd({ risks: [...(p.risks || []), { text: risk.text.trim(), level: risk.level, resolved: false }] }); setRisk({ text: '', level: 'medium' }) }
   const saveEval = async () => { const { _loaded, ...clean } = ev; await upd({ evaluation: clean }); setEvSaved(true); setTimeout(() => setEvSaved(false), 2000) }
   const addNote = async () => { if (!note.trim()) return; await addLog({ type: 'work_log', category: p.name, label: 'Project', content: note.trim() }); setNote('') }
-  const delProject = async () => { if (!confirm(`Delete “${p.name}” with its milestones and expenses? Tasks stay in Tasks & To-Do.`)) return; await supabase.from('projects').delete().eq('id', p.id); emitChange(); router.push('/projects') }
+  const delProject = async () => { if (!confirm(`Delete “${p.name}” with its milestones and expenses? Its tasks are NOT deleted — they move to Inbox (no project).`)) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; const err = await deleteList(user.id, { id: p.id, name: p.name }); if (err) { alert('Could not delete: ' + err); return } router.push('/projects') }
 
   const byCat: Record<string, number> = {}; ex.filter((e: any) => e.type !== 'income').forEach((e: any) => { byCat[e.category || 'Other'] = (byCat[e.category || 'Other'] || 0) + Number(e.amount) })
   const dataPoints = [
@@ -97,7 +98,7 @@ export default function ProjectPage() {
       <div className="flex items-start gap-3 mt-1 mb-4 flex-wrap">
         <span className="text-4xl">{p.emoji}</span>
         <div className="flex-1 min-w-[200px]">
-          <h1 className="text-xl font-bold">{p.name}</h1>
+          <h1 className="text-xl font-bold">{p.name}</h1>{p.legacy_route && <a href={p.legacy_route} className="text-xs font-semibold text-teal-600">Open workspace →</a>}
           <div className="flex gap-1.5 mt-1 items-center flex-wrap">
             <select value={p.status} onChange={e => upd({ status: e.target.value })} className={`text-[11px] font-bold px-2 py-1 rounded-full border-none outline-none cursor-pointer ${status?.cls}`}>{PROJECT_STATUS.map(s => <option key={s.v} value={s.v}>{s.l}</option>)}</select>
             <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${HEALTH_STYLE[h.level]}`}>● {h.label}</span>

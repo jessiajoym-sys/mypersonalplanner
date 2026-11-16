@@ -7,13 +7,9 @@ import { onChange, todayStr } from '@/lib/planner'
 import { HEALTH_DOT, HEALTH_STYLE, PROJECT_STATUS, loadProjectData, money, projectHealth, spentOf, tasksOfProject } from '@/lib/projects'
 import { ProgressBar } from '@/components/planner/Charts'
 import { CardHeader } from '@/components/planner/Modal'
+import { ensureSeed } from '@/lib/taskProjects'
 import ProjectForm from '@/components/planner/ProjectForm'
 
-const LEGACY = [
-  { href: '/projects/travel', icon: '📱', title: 'Travel Content', detail: 'Content pipeline: idea → planning → in progress → ready → posted, with performance review.', color: '#14B8A6', cat: 'Travel Content' },
-  { href: '/projects/s2', icon: '🎓', title: "Master's Degree", detail: 'Applications, scholarships and study preparation.', color: '#5B7FFF', cat: "Master's Degree" },
-  { href: '/projects/mandarin', icon: '📖', title: 'Mandarin Study', detail: 'Language goals, practice and HSK preparation.', color: '#F97316', cat: 'Mandarin Study' },
-]
 
 export default function ProjectsDashboard() {
   const [data, setData] = useState<any>(null)
@@ -24,6 +20,7 @@ export default function ProjectsDashboard() {
 
   const load = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser(); if (!user) return
+    await ensureSeed(user.id)
     setData(await loadProjectData(supabase, user.id))
     const c = await supabase.from('content_ideas').select('status').eq('user_id', user.id); setContent(c.data || [])
   }, [])
@@ -100,6 +97,7 @@ export default function ProjectsDashboard() {
             <Link key={p.id} href={`/projects/${p.id}`} className="card p-4 hover:shadow-md transition-shadow" style={{ borderTop: `3px solid ${p.color}` }}>
               <div className="flex items-start gap-3"><span className="text-3xl">{p.emoji}</span><div className="flex-1 min-w-0"><div className="font-bold truncate">{p.name}</div><div className="flex gap-1.5 mt-1 flex-wrap"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${st?.cls}`}>{st?.l}</span><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${HEALTH_STYLE[r.h.level as keyof typeof HEALTH_STYLE]}`}>● {r.h.label}</span></div></div></div>
               {p.goal && <div className="text-[11px] text-gray-500 mt-2 line-clamp-2">🎯 {p.goal}</div>}
+              {p.legacy_route && <div className="text-[11px] mt-2"><span role="link" className="text-teal-600 font-semibold" onClick={e => { e.preventDefault(); e.stopPropagation(); window.location.href = p.legacy_route }}>Open workspace →</span></div>}
               <div className="mt-3"><div className="flex justify-between text-[11px] mb-1"><span className="text-gray-400">Progress</span><b>{Math.round(r.h.progress)}%</b></div><ProgressBar pct={r.h.progress} color={p.color} /></div>
               <div className="grid grid-cols-3 gap-2 mt-3 text-center">
                 <div className="bg-gray-50 rounded-lg py-1.5"><div className="text-sm font-bold">{r.tasks.filter((t: any) => t.status === 'done').length}/{r.tasks.length}</div><div className="text-[9px] text-gray-400 uppercase">Tasks</div></div>
@@ -113,14 +111,6 @@ export default function ProjectsDashboard() {
         {live.length === 0 && data?.projects && <div className="md:col-span-2 xl:col-span-3 card p-8 text-center text-sm text-gray-400">No projects yet. Click <b>+ New project</b>, e.g. “Japan trip content series”.</div>}
       </div>
 
-      <h2 className="text-sm font-bold text-gray-600 mb-2">Workspaces</h2>
-      <div className="grid md:grid-cols-3 gap-4">
-        {LEGACY.map(l => {
-          const t = data ? tasksOfProject(data.todos, l.cat) : []; const done = t.filter((x: any) => x.status === 'done').length
-          const extra = l.href.endsWith('travel') ? `${content.filter(c => c.status === 'posted').length} posted · ${content.length} ideas` : `${done}/${t.length} tasks`
-          return <Link key={l.href} href={l.href} className="card p-4 hover:shadow-md transition-shadow" style={{ borderTop: `3px solid ${l.color}` }}><div className="flex items-center gap-3"><span className="text-3xl">{l.icon}</span><div><div className="font-bold">{l.title}</div><div className="text-[11px] text-gray-400">{extra}</div></div></div><p className="text-[11px] text-gray-500 mt-2">{l.detail}</p></Link>
-        })}
-      </div>
       {showNew && <ProjectForm onClose={() => setShowNew(false)} onSaved={load} />}
     </div>
   )

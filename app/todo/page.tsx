@@ -3,13 +3,16 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { format } from 'date-fns'
 import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
-import { DEFAULT_PROJECTS, STATUS_OPTIONS, REPEAT_OPTIONS, createTask, setTaskStatus, deleteTask as deleteTaskLib, updateTask, onChange, todayStr } from '@/lib/planner'
+import { loadTaskProjects, createProject, renameList, deleteList, INBOX, type TProject } from '@/lib/taskProjects'
+import { STATUS_OPTIONS, REPEAT_OPTIONS, createTask, setTaskStatus, deleteTask as deleteTaskLib, updateTask, onChange, todayStr } from '@/lib/planner'
 import TaskForm from '@/components/planner/TaskForm'
 import SmartCalendar from '@/components/planner/SmartCalendar'
 
 export default function TodoPage() {
   const [todos, setTodos] = useState<any[]>([])
-  const [projects, setProjects] = useState(DEFAULT_PROJECTS)
+  const [projects, setProjects] = useState<TProject[]>([])
+  const [uid, setUid] = useState('')
+  const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'list' | 'board' | 'calendar'>('list')
   const [expandedTask, setExpandedTask] = useState<string | null>(null)
@@ -34,11 +37,14 @@ export default function TodoPage() {
       .eq('user_id', user.id).order('created_at', { ascending: false })
     if (data) {
       setTodos(data.map((t: any) => t.status === 'pending' ? { ...t, status: 'todo' } : t))
-      const existingProjects = Array.from(new Set(data.map((t: any) => t.category)))
-      const customProjects = existingProjects
-        .filter((p: any) => p && !DEFAULT_PROJECTS.find(dp => dp.name === p))
-        .map((p: any) => ({ name: p, color: '#8B5CF6', dot: 'bg-purple-500' }))
-      if (customProjects.length > 0) setProjects([...DEFAULT_PROJECTS, ...customProjects])
+      const { projects: dbProjects } = await loadTaskProjects(user.id)
+      setUid(user.id)
+      // lists that exist only because old tasks use the name (not a project) are still shown, so nothing is hidden
+      const known = new Set(dbProjects.map(p => p.name))
+      const orphans = Array.from(new Set(data.map((t: any) => t.category).filter((c: any) => c && !known.has(c))))
+        .filter((c: any) => c !== INBOX || data.some((t: any) => t.category === INBOX && t.status !== 'done'))
+        .map((c: any) => ({ name: c, color: c === INBOX ? '#9CA3AF' : '#8B5CF6', fromDb: false }))
+      setProjects([...dbProjects.filter(p => p.status !== 'done'), ...orphans])
     }
     setLoading(false)
   }
@@ -80,17 +86,22 @@ export default function TodoPage() {
     load()
   }
 
-  function addProject() {
-    if (!newProjectName.trim() || projects.find(p => p.name === newProjectName)) return
-    setProjects([...projects, { name: newProjectName, color: '#8B5CF6', dot: 'bg-purple-500' }])
-    setNewProjectName('')
-    setShowNewProject(false)
+  async function addProject() {
+    if (!newProjectName.trim() || !uid) return
+    const err = await createProject(uid, newProjectName)
+    if (err) { setMsg(err); return }
+    setNewProjectName(''); setShowNewProject(false); setMsg(''); await load()
   }
 
-  function removeProject(name: string) {
-    if (DEFAULT_PROJECTS.find(p => p.name === name)) return
-    if (!confirm(`Delete project "${name}"? Tasks will not be deleted.`)) return
-    setProjects(projects.filter(p => p.name !== name))
+  async function renameProject(p: TProject) {
+    if (p.name === INBOX) return
+    const next = prompt('Rename this project / list to:', p.name); if (!next) return
+    const err = await renameList(uid, p, next); setMsg(err || `Renamed to "${next.trim()}". Its tasks moved with it.`); await load()
+  }
+
+  async function removeProject(p: TProject) {
+    if (!confirm(`Delete "${p.name}"? Its tasks are NOT deleted — they move to "${INBOX}" (no project).`)) return
+    const err = await deleteList(uid, p); setMsg(err || `"${p.name}" deleted. Its tasks are now in ${INBOX}.`); await load()
   }
 
   function toggleCollapse(name: string) {
@@ -251,6 +262,7 @@ export default function TodoPage() {
         🔗 <span>Ticking a task here logs it in <b>Daily Log → Accomplishments</b>. Dates & deadlines show in the <b>Calendar</b>. A task can belong to one main project and also appear in others via “Also belongs to”.</span>
       </div>
 
+      {msg && <div role="status" className="mb-3 text-xs rounded-lg bg-gray-100 text-gray-700 px-3 py-2 flex justify-between"><span>{msg}</span><button onClick={() => setMsg('')} className="text-gray-400">✕</button></div>}
       {showNewProject && (
         <div className="card p-4 mb-4 border-2 border-dashed border-blue-200">
           <div className="text-xs font-bold text-gray-400 uppercase mb-2">+ New Project/Category</div>
@@ -323,12 +335,12 @@ export default function TodoPage() {
                       <span className="text-xs text-gray-400">{donePct}% done</span>
                     )}
                   </button>
-                  {!DEFAULT_PROJECTS.find(p => p.name === project.name) && (
-                    <button onClick={() => removeProject(project.name)}
-                      className="opacity-0 group-hover:opacity-100 text-xs text-gray-300 hover:text-red-500 transition-all">
-                      Delete project
-                    </button>
+                  {project.name !== INBOX && (
+                    <button onClick={() => renameProject(project)} className="opacity-60 sm:opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-teal-600 transition-all">Rename</button>
                   )}
+                  <button onClick={() => removeProject(project)} className="opacity-60 sm:opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-red-500 transition-all">
+                    {project.name === INBOX || !project.fromDb ? 'Clear list' : 'Delete'}
+                  </button>
                 </div>
 
                 {!isCollapsed && (

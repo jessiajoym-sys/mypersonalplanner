@@ -79,3 +79,10 @@ Mood in Pixels (tags, energy, insights), Journal (guided prompts) and Diary (pri
 
 ## Upgrade 10 – RMB import (Alipay CSV, WeChat Excel)
 Finance → RMB → "Import Alipay / WeChat". Needs upgrade 8 SQL. New dependency `xlsx` (installed automatically by Vercel).
+
+## Upgrade 11 – editable task lists & projects, finance fixes
+1. Supabase SQL Editor: run `lib/planner-fix-transactions.sql` (fixes "violates check constraint transactions_income_check"), then `lib/planner-upgrade-11.sql`.
+2. School/Content/Business/Personal/Finance and Travel Content / Master's Degree / Mandarin Study become normal projects (created once, so deleting them sticks). Rename or delete them in Tasks & To-Do or the Projects dashboard. Deleting keeps tasks (moved to Inbox).
+3. New Task form and Calendar "+ task" list your real projects.
+
+Note: `transactions.type` is a Postgres enum in this database. `planner-fix-transactions.sql` adds the new values (adjustment, refund, interest, loan_*, credit_card_payment …) — run it before importing.

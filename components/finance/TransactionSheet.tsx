@@ -9,6 +9,7 @@ import type { FinanceLists } from '@/lib/financeLists'
 
 const PAGE = 150
 const COPY_FIELDS = ['user_id', 'type', 'currency', 'from_account_id', 'to_account_id', 'category', 'subcategory', 'merchant', 'description', 'notes', 'business_id', 'project_id', 'purpose', 'transaction_date', 'source', 'bk_class', 'platform', 'original_description', 'original_direction', 'source_file', 'source_ref', 'import_batch']
+const CHECK = /check constraint/i
 const NEEDS8 = /original_description|my_description|subcategory|notes|import_hash|split_group|updated_at|transaction_audit|schema cache/i
 const uuid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)
 
@@ -77,7 +78,7 @@ export default function TransactionSheet({ transactions, accounts, businesses, p
     return m
   }, [rows])
 
-  const fail = (msg: string) => onToast('Could not save: ' + msg + (NEEDS8.test(msg) ? ' — run lib/planner-upgrade-8.sql in Supabase first.' : ''))
+  const fail = (msg: string) => onToast('Could not save: ' + msg + (CHECK.test(msg) ? ' — run lib/planner-fix-transactions.sql in Supabase.' : NEEDS8.test(msg) ? ' — run lib/planner-upgrade-8.sql in Supabase first.' : ''))
 
   async function audit(entries: { transaction_id: string; action: string; changes: any }[]) {
     if (!entries.length) return
@@ -207,7 +208,7 @@ export default function TransactionSheet({ transactions, accounts, businesses, p
           <thead className="bg-gray-50 text-gray-500 sticky top-0"><tr className="text-left">
             <th className="p-2 w-8"><input type="checkbox" checked={allOn} onChange={toggleAll} aria-label="Include all" title="Include" /></th>
             <th className="p-2 w-28">Date</th><th className="p-2 w-52">Original Description</th><th className="p-2 w-44">My Description</th><th className="p-2 w-28">Account</th>
-            <th className="p-2 w-24 text-right">Debit</th><th className="p-2 w-24 text-right">Credit</th><th className="p-2 w-32">Type</th><th className="p-2 w-28">Purpose</th>
+            <th className="p-2 w-28 text-right" title="Debit: money leaving this account">Money out<div className="text-[9px] font-normal normal-case">Debit</div></th><th className="p-2 w-28 text-right" title="Credit: money coming into this account">Money in<div className="text-[9px] font-normal normal-case">Credit</div></th><th className="p-2 w-32">Type</th><th className="p-2 w-28">Purpose</th>
             <th className="p-2 w-28">Business</th><th className="p-2 w-28">Project</th><th className="p-2 w-32">Category</th><th className="p-2 w-28">Subcategory</th><th className="p-2 w-36">Notes</th><th className="p-2 w-24">Receipt</th>
           </tr></thead>
           <tbody>

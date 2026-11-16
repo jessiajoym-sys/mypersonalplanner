@@ -1,7 +1,8 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { DEFAULT_PROJECTS, REMINDER_OPTIONS, REPEAT_OPTIONS, STATUS_OPTIONS, createTask, loadBusinesses, todayStr, updateTask, setTaskStatus, deleteTask } from '@/lib/planner'
+import { loadTaskProjects, INBOX } from '@/lib/taskProjects'
+import { REMINDER_OPTIONS, REPEAT_OPTIONS, STATUS_OPTIONS, createTask, loadBusinesses, todayStr, updateTask, setTaskStatus, deleteTask } from '@/lib/planner'
 import Modal, { Field } from './Modal'
 
 type Props = {
@@ -14,11 +15,11 @@ type Props = {
 export default function TaskForm({ onClose, onSaved, initial, defaults }: Props) {
   const editing = !!initial?.id
   const [f, setF] = useState<any>(() => ({
-    title: '', task_type: 'task', category: 'Personal', tags: [] as string[], business_id: '', priority: 'medium', status: 'todo',
+    title: '', task_type: 'task', category: INBOX, tags: [] as string[], business_id: '', priority: 'medium', status: 'todo',
     scheduled_date: todayStr(), scheduled_time: '', end_time: '', deadline: '', repeat_type: 'never', location: '', reminder_minutes: '', notes: '', is_urgent: false,
     ...defaults, ...(initial ? { ...initial, tags: initial.tags || [], business_id: initial.business_id || '', scheduled_time: initial.scheduled_time || '', end_time: initial.end_time || '', deadline: initial.deadline || '', location: initial.location || '', notes: initial.notes || '', reminder_minutes: initial.reminder_minutes ?? '', scheduled_date: initial.scheduled_date || '', repeat_type: initial.repeat_type || 'never', status: initial.status === 'pending' ? 'todo' : initial.status } : {}),
   }))
-  const [projects, setProjects] = useState<string[]>(DEFAULT_PROJECTS.map(p => p.name))
+  const [projects, setProjects] = useState<string[]>([])
   const [businesses, setBusinesses] = useState<any[]>([])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
@@ -27,10 +28,13 @@ export default function TaskForm({ onClose, onSaved, initial, defaults }: Props)
   useEffect(() => {
     (async () => {
       setBusinesses(await loadBusinesses())
+      const { data: { user } } = await supabase.auth.getUser()
+      const { projects: list } = user ? await loadTaskProjects(user.id) : { projects: [] as any[] }
       const { data } = await supabase.from('todos').select('category')
-      const pr = await supabase.from('projects').select('name').neq('status', 'done')
-      const extra = Array.from(new Set([...(data || []).map((r: any) => r.category), ...(pr.error ? [] : (pr.data || []).map((r: any) => r.name))].filter(Boolean))) as string[]
-      setProjects(prev => Array.from(new Set([...prev, ...extra])))
+      const names = list.filter((p: any) => p.status !== 'done').map((p: any) => p.name)
+      // names still used by existing tasks stay selectable (so editing an old task never loses its project)
+      const used = Array.from(new Set((data || []).map((r: any) => r.category).filter((c: any) => c && c !== INBOX && !names.includes(c)))) as string[]
+      setProjects([...names, ...used])
     })()
   }, [])
 
@@ -80,6 +84,7 @@ export default function TaskForm({ onClose, onSaved, initial, defaults }: Props)
       <div className="grid grid-cols-2 gap-3 mb-3">
         <Field label="Project / list">
           <select className="sel w-full" value={f.category} onChange={e => set('category', e.target.value)}>
+            <option value={INBOX}>No project (Inbox)</option>
             {projects.map(p => <option key={p}>{p}</option>)}
           </select>
         </Field>
